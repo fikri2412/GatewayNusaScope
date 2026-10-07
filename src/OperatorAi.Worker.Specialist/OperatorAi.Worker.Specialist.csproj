@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-OperatorAi.Worker.Specialist-beac4bda-71f1-4db0-a76d-09f1af59e39a</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.17" />
+    <PackageReference Include="ClosedXML" Version="0.*" />
+    <PackageReference Include="QuestPDF" Version="2025.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OperatorAi.Shared\OperatorAi.Shared.csproj" />
+  </ItemGroup>
+</Project>

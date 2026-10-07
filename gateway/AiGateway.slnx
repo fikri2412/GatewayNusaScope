@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AiGateway.Api/AiGateway.Api.csproj" />
+    <Project Path="src/AiGateway.Core/AiGateway.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AiGateway.Tests/AiGateway.Tests.csproj" />
+  </Folder>
+</Solution>

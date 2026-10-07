@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OperatorAi.Api/OperatorAi.Api.csproj" />
+    <Project Path="src/OperatorAi.Shared/OperatorAi.Shared.csproj" />
+    <Project Path="src/OperatorAi.Worker.Operator/OperatorAi.Worker.Operator.csproj" />
+    <Project Path="src/OperatorAi.Worker.Specialist/OperatorAi.Worker.Specialist.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OperatorAi.Tests/OperatorAi.Tests.csproj" />
+  </Folder>
+</Solution>
