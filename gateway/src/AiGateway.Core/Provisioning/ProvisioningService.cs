@@ -1,13 +1,16 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
+using AiGateway.Core.Options;
 using AiGateway.Core.Proxy;
 using AiGateway.Core.Security;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AiGateway.Core.Provisioning;
 
@@ -17,7 +20,8 @@ public sealed record RouteSpec(long ProviderId, string UpstreamModel, int Priori
 public sealed record ModelSpec(
     string Alias, string UpstreamModel, int? MaxOutputTokens = null,
     decimal? InputPricePer1M = null, decimal? OutputPricePer1M = null, string Currency = "USD",
-    decimal? CacheReadPricePer1M = null, decimal? CacheWritePricePer1M = null, IReadOnlyList<PriceTier>? Tiers = null);
+    decimal? CacheReadPricePer1M = null, decimal? CacheWritePricePer1M = null, IReadOnlyList<PriceTier>? Tiers = null,
+    string? Description = null);
 
 /// <summary>Kebijakan satu scope. NULL = tidak dibatasi; <see cref="AllowedModels"/> NULL = semua model.</summary>
 public sealed record PolicySpec(
@@ -33,7 +37,8 @@ public sealed record CreatedApiKey(ApiKey Entity, string PlaintextKey);
 /// <see cref="GatewayDbContext.CurrentTenantId"/> yang sudah diset pemanggil.
 /// </summary>
 public sealed partial class ProvisioningService(
-    GatewayDbContext db, ProviderKeyProtector protector, IHttpClientFactory httpFactory, OutboundSecurityPolicy outbound)
+    GatewayDbContext db, ProviderKeyProtector protector, IHttpClientFactory httpFactory, OutboundSecurityPolicy outbound,
+    IOptions<ProxyOptions> proxyOptions)
 {
     // --- tingkat platform ---------------------------------------------------------------------
 
@@ -111,7 +116,13 @@ public sealed partial class ProvisioningService(
         }
         await db.SaveChangesAsync(ct); // indeks unik "satu key aktif" mensyaratkan yang lama nonaktif lebih dulu
         db.ProviderCredentials.Add(NewCredential(providerId, newApiKey));
-        await db.SaveChangesAsync(ct);
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 2601 or 2627 })
+        {
+            // Rotasi bersamaan: salah satu permintaan kalah di indeks unik "satu key aktif".
+            db.ChangeTracker.Clear();
+            throw GatewayException.Conflict("concurrent_update", "Kunci provider baru saja dirotasi oleh proses lain. Muat ulang lalu coba lagi.");
+        }
         await tx.CommitAsync(ct);
     }
 
@@ -137,24 +148,32 @@ public sealed partial class ProvisioningService(
 
         // Validasi ulang BaseUrl tersimpan (baris lama bisa saja belum lewat anti-SSRF); koneksi tetap dicek di handler.
         outbound.RequireHttpsUri(provider.BaseUrl, "invalid_base_url");
+        string apiKey;
+        try { apiKey = protector.Unprotect(db.CurrentTenantId, credential.ApiKeyEncrypted); }
+        catch (CryptographicException)
+        {
+            throw new GatewayException(502, "provider_credential_unreadable",
+                $"Kredensial provider {providerId} tidak bisa didekripsi; rotasi key provider untuk memperbaikinya.");
+        }
         using var request = new HttpRequestMessage(HttpMethod.Get,
             new Uri(new Uri(provider.BaseUrl.TrimEnd('/') + "/"), provider.ModelsPath.TrimStart('/')));
-        request.Headers.TryAddWithoutValidation(provider.AuthHeader,
-            provider.AuthPrefix + protector.Unprotect(db.CurrentTenantId, credential.ApiKeyEncrypted));
+        request.Headers.TryAddWithoutValidation(provider.AuthHeader, provider.AuthPrefix + apiKey);
 
         try
         {
-            using var response = await httpFactory.CreateClient(ChatProxy.HttpClientName).SendAsync(request, ct);
+            using var response = await httpFactory.CreateClient(ChatProxy.HttpClientName)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!response.IsSuccessStatusCode)
                 throw new GatewayException(502, "discovery_failed", $"Provider menjawab HTTP {(int)response.StatusCode}.");
-            var root = JsonNode.Parse(await response.Content.ReadAsStringAsync(ct));
+            var root = JsonNode.Parse(await BoundedContent.ReadStringAsync(response.Content, proxyOptions.Value.MaxResponseBytes, ct));
             var items = root is JsonArray a ? a : root?["data"] as JsonArray;
             return (items ?? [])
                 .Select(n => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : n?["id"]?.GetValue<string>())
                 .Where(id => id is { Length: > 0 and <= 200 })
                 .Select(id => id!).Distinct().Take(1000).ToList();
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or OperationCanceledException && !ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or ResponseTooLargeException
+                                   or OperationCanceledException && !ct.IsCancellationRequested)
         {
             throw new GatewayException(502, "discovery_failed", "Daftar model dari provider tidak bisa dibaca.");
         }
@@ -180,55 +199,70 @@ public sealed partial class ProvisioningService(
 
     /// <summary>
     /// Buat model + route (priority 0) + harga awal untuk tiap spec. Idempoten: alias yang sudah ada dilewati.
+    /// Semua spec divalidasi lebih dulu dan seluruh impor berjalan dalam satu transaksi (semua-atau-tidak-sama-sekali).
     /// </summary>
     public async Task<List<Model>> ImportModelsAsync(long providerId, IReadOnlyCollection<ModelSpec> specs, CancellationToken ct)
     {
         if (!await db.Providers.AnyAsync(p => p.Id == providerId, ct)) throw GatewayException.NotFound("Provider");
+        foreach (var spec in specs)
+        {
+            ValidateSpec(spec);
+            ValidateUpstreamModel(spec.UpstreamModel);
+        }
+
         var created = new List<Model>();
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         foreach (var spec in specs)
         {
             if (await db.Models.AnyAsync(m => m.Alias == spec.Alias, ct)) continue;
-            created.Add(await CreateModelAsync(spec, [new RouteSpec(providerId, spec.UpstreamModel)], ct));
+            created.Add(await CreateModelCoreAsync(spec, [new RouteSpec(providerId, spec.UpstreamModel)], ct));
         }
+        await tx.CommitAsync(ct);
         return created;
     }
 
     public async Task<Model> CreateModelAsync(ModelSpec spec, IReadOnlyCollection<RouteSpec> routes, CancellationToken ct)
     {
-        if (!AliasRegex().IsMatch(spec.Alias))
-            throw GatewayException.BadRequest("invalid_alias", "Alias hanya huruf, angka, '.', '_', ':', '/', '-' (maks 100 karakter).");
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var model = await CreateModelCoreAsync(spec, routes, ct);
+        await tx.CommitAsync(ct);
+        return model;
+    }
+
+    /// <summary>Badan pembuatan model tanpa transaksi sendiri; pemanggil yang menentukan lingkup transaksi.</summary>
+    private async Task<Model> CreateModelCoreAsync(ModelSpec spec, IReadOnlyCollection<RouteSpec> routes, CancellationToken ct)
+    {
+        ValidateSpec(spec);
         if (routes.Count == 0) throw GatewayException.BadRequest("no_routes", "Model butuh minimal satu route.");
-        if (spec.MaxOutputTokens is <= 0) throw GatewayException.BadRequest("invalid_max_output", "max_output_tokens harus > 0.");
-        if (spec.InputPricePer1M is < 0 || spec.OutputPricePer1M is < 0)
-            throw GatewayException.BadRequest("invalid_price", "Harga tidak boleh negatif.");
 
         var providerIds = routes.Select(r => r.ProviderId).Distinct().ToList();
         if (await db.Providers.CountAsync(p => providerIds.Contains(p.Id), ct) != providerIds.Count)
             throw GatewayException.NotFound("Provider");
         foreach (var r in routes)
         {
-            if (string.IsNullOrWhiteSpace(r.UpstreamModel) || r.UpstreamModel.Length > 200)
-                throw GatewayException.BadRequest("invalid_upstream_model", "upstream_model tidak valid.");
+            ValidateUpstreamModel(r.UpstreamModel);
             if (r.Priority < 0 || r.Weight < 1)
                 throw GatewayException.BadRequest("invalid_route", "priority >= 0 dan weight >= 1.");
         }
 
-        var model = new Model { Alias = spec.Alias, MaxOutputTokens = spec.MaxOutputTokens };
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var model = new Model { Alias = spec.Alias, MaxOutputTokens = spec.MaxOutputTokens, Description = ValidateDescription(spec.Description) };
         db.Models.Add(model);
         await SaveUniqueAsync("Alias model sudah dipakai.", ct);
         foreach (var r in routes)
             db.ModelRoutes.Add(new ModelRoute { ModelId = model.Id, ProviderId = r.ProviderId, UpstreamModel = r.UpstreamModel, Priority = r.Priority, Weight = r.Weight });
-        if (spec.InputPricePer1M is not null || spec.OutputPricePer1M is not null)
+        var tiers = spec.Tiers ?? [];
+        var hasBasePrice = spec.InputPricePer1M is not null || spec.OutputPricePer1M is not null;
+        if (hasBasePrice || tiers.Count > 0)
         {
             var effective = DateTime.UtcNow;
-            db.ModelPrices.Add(new ModelPrice
-            {
-                ModelId = model.Id, InputPricePer1M = spec.InputPricePer1M ?? 0, OutputPricePer1M = spec.OutputPricePer1M ?? 0,
-                CacheReadPricePer1M = spec.CacheReadPricePer1M, CacheWritePricePer1M = spec.CacheWritePricePer1M,
-                Currency = spec.Currency, EffectiveFrom = effective,
-            });
-            foreach (var tier in spec.Tiers ?? [])
+            if (hasBasePrice)
+                db.ModelPrices.Add(new ModelPrice
+                {
+                    ModelId = model.Id, InputPricePer1M = spec.InputPricePer1M ?? 0, OutputPricePer1M = spec.OutputPricePer1M ?? 0,
+                    CacheReadPricePer1M = spec.CacheReadPricePer1M, CacheWritePricePer1M = spec.CacheWritePricePer1M,
+                    Currency = spec.Currency, EffectiveFrom = effective,
+                });
+            foreach (var tier in tiers)
                 db.ModelPrices.Add(new ModelPrice
                 {
                     ModelId = model.Id, InputPricePer1M = tier.Input, OutputPricePer1M = tier.Output,
@@ -237,20 +271,29 @@ public sealed partial class ProvisioningService(
                 });
         }
         await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
         return model;
     }
 
     // --- project dan key klien -----------------------------------------------------------------
 
-    public async Task<Project> CreateProjectAsync(string name, CancellationToken ct)
+    /// <summary>
+    /// Buat project; opsi simpan isi (log_content, masa simpan) ikut divalidasi sebelum insert supaya permintaan
+    /// yang ditolak tidak meninggalkan project setengah jadi.
+    /// </summary>
+    public async Task<Project> CreateProjectAsync(string name, CancellationToken ct, bool? logContent = null, int? contentRetentionDays = null)
     {
         var projectName = RequireName(name, 100, "name");
+        var retention = contentRetentionDays is { } days ? ValidateRetention(days) : (int?)null;
+        // Hitung-lalu-sisip dibalap oleh permintaan bersamaan; baris tenant dikunci lebih dulu supaya
+        // dua pembuatan project tidak bisa sama-sama lolos batas plan. Kunci dilepas saat transaksi selesai.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await LockTenantAsync(ct);
         if ((await PlanAsync(ct)).MaxProjects is { } maxProjects && await db.Projects.CountAsync(ct) >= maxProjects)
             throw PlanLimit("project", maxProjects);
-        var project = new Project { Name = projectName };
+        var project = new Project { Name = projectName, LogContent = logContent ?? false, ContentRetentionDays = retention };
         db.Projects.Add(project);
         await SaveUniqueAsync("Nama project sudah dipakai.", ct);
+        await tx.CommitAsync(ct);
         return project;
     }
 
@@ -258,9 +301,8 @@ public sealed partial class ProvisioningService(
         long projectId, string name, DateTime? expiresAt, IReadOnlyCollection<string>? allowedIps, long? createdByUserId, CancellationToken ct)
     {
         name = RequireName(name, 100, "name");
+        expiresAt = ToUtc(expiresAt);
         if (!await db.Projects.AnyAsync(p => p.Id == projectId, ct)) throw GatewayException.NotFound("Project");
-        if ((await PlanAsync(ct)).MaxApiKeys is { } maxKeys && await db.ApiKeys.CountAsync(k => k.RevokedAt == null, ct) >= maxKeys)
-            throw PlanLimit("API key aktif", maxKeys);
         if (expiresAt is not null && expiresAt <= DateTime.UtcNow)
             throw GatewayException.BadRequest("invalid_expiry", "Tanggal kedaluwarsa harus di masa depan.");
         if (allowedIps is { Count: > 0 })
@@ -275,10 +317,19 @@ public sealed partial class ProvisioningService(
             AllowedIpsJson = allowedIps is { Count: > 0 } ? JsonSerializer.Serialize(allowedIps) : null,
             CreatedByUserId = createdByUserId,
         };
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await LockTenantAsync(ct);
+        if ((await PlanAsync(ct)).MaxApiKeys is { } maxKeys && await db.ApiKeys.CountAsync(k => k.RevokedAt == null, ct) >= maxKeys)
+            throw PlanLimit("API key aktif", maxKeys);
         db.ApiKeys.Add(key);
         await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return new CreatedApiKey(key, plaintext);
     }
+
+    /// <summary>Kunci baris tenant sampai transaksi pemanggil selesai, pembatas batas plan (max_projects/max_api_keys).</summary>
+    private Task LockTenantAsync(CancellationToken ct) =>
+        db.Database.ExecuteSqlAsync($"SELECT 1 FROM tenants WITH (UPDLOCK, HOLDLOCK) WHERE id = {db.CurrentTenantId}", ct);
 
     // --- kebijakan dan batas plan --------------------------------------------------------------
 
@@ -326,6 +377,12 @@ public sealed partial class ProvisioningService(
     private async Task SaveUniqueAsync(string conflictMessage, CancellationToken ct)
     {
         try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException)
+        {
+            // baris (row_version) berubah di antara baca dan tulis, mis. dua PUT kebijakan bersamaan.
+            db.ChangeTracker.Clear();
+            throw GatewayException.Conflict("concurrent_update", "Data diubah pengguna lain. Muat ulang lalu coba lagi.");
+        }
         catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 2601 or 2627 })
         {
             db.ChangeTracker.Clear();
@@ -340,6 +397,74 @@ public sealed partial class ProvisioningService(
             throw GatewayException.BadRequest("invalid_" + field, $"{field} wajib diisi, maksimal {max} karakter.");
         return value;
     }
+
+    /// <summary>Bagian <see cref="ModelSpec"/> yang bisa divalidasi tanpa database (dipakai pembuatan dan impor model).</summary>
+    private static void ValidateSpec(ModelSpec spec)
+    {
+        if (!AliasRegex().IsMatch(spec.Alias))
+            throw GatewayException.BadRequest("invalid_alias", "Alias hanya huruf, angka, '.', '_', ':', '/', '-' (maks 100 karakter).");
+        if (spec.MaxOutputTokens is <= 0) throw GatewayException.BadRequest("invalid_max_output", "max_output_tokens harus > 0.");
+        ValidatePrices(spec.InputPricePer1M, spec.OutputPricePer1M, spec.CacheReadPricePer1M, spec.CacheWritePricePer1M, spec.Currency, spec.Tiers);
+    }
+
+    private static void ValidateUpstreamModel(string upstreamModel)
+    {
+        if (string.IsNullOrWhiteSpace(upstreamModel) || upstreamModel.Length > 200)
+            throw GatewayException.BadRequest("invalid_upstream_model", "upstream_model tidak valid.");
+    }
+
+    /// <summary>Deskripsi model maksimal 500 karakter; string kosong berarti tanpa deskripsi.</summary>
+    private static string? ValidateDescription(string? description)
+    {
+        if (description is null) return null;
+        if (description.Length > 500)
+            throw GatewayException.BadRequest("invalid_description", "Deskripsi maksimal 500 karakter.");
+        return description.Length == 0 ? null : description;
+    }
+
+    /// <summary>Masa simpan isi request: 1-3650 hari.</summary>
+    private static int ValidateRetention(int days) =>
+        days is >= 1 and <= 3650 ? days : throw GatewayException.BadRequest("invalid_retention", "Masa simpan 1-3650 hari.");
+
+    /// <summary>
+    /// Harga dasar dan tier: non-negatif, ambang tier unik dan minimal 1 token, mata uang 3 huruf kapital, dan nilainya
+    /// masih muat kolom <c>decimal(18,6)</c>. Dipakai jalur buat model dan tambah harga supaya keduanya menolak
+    /// masukan yang sama dengan 400, bukan gagal di database.
+    /// </summary>
+    private static void ValidatePrices(
+        decimal? input, decimal? output, decimal? cacheRead, decimal? cacheWrite, string currency, IReadOnlyList<PriceTier>? tiers)
+    {
+        const decimal maxPrice = 999_999_999_999.999999m; // batas kolom decimal(18,6)
+        var prices = new[] { input, output, cacheRead, cacheWrite }
+            .Concat((tiers ?? []).SelectMany(t => new decimal?[] { t.Input, t.Output, t.CacheRead, t.CacheWrite }))
+            .ToList();
+        if (prices.Any(p => p < 0)) throw GatewayException.BadRequest("invalid_price", "Harga tidak boleh negatif.");
+        if (prices.Any(p => p > maxPrice))
+            throw GatewayException.BadRequest("invalid_price", $"Harga maksimal {maxPrice} (batas decimal(18,6)).");
+        if (tiers is not null)
+        {
+            if (tiers.Any(t => t.MinInputTokens < 1))
+                throw GatewayException.BadRequest("invalid_price", "Tier harus mulai dari >= 1 token.");
+            if (tiers.GroupBy(t => t.MinInputTokens).Any(g => g.Count() > 1))
+                throw GatewayException.BadRequest("invalid_price", "Tier tidak boleh punya ambang yang sama.");
+        }
+        if (currency is not { Length: 3 } || !currency.All(char.IsAsciiLetterUpper))
+            throw GatewayException.BadRequest("invalid_currency", "Mata uang harus kode 3 huruf kapital (mis. USD).");
+    }
+
+    /// <summary>
+    /// Waktu dari klien dinormalkan ke UTC: nilai tanpa zona dianggap UTC (sama seperti parsing waktu di endpoint admin),
+    /// sehingga kedaluwarsa key tidak bergeser sebesar offset server.
+    /// </summary>
+    public static DateTime ToUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+    };
+
+    /// <inheritdoc cref="ToUtc(DateTime)"/>
+    public static DateTime? ToUtc(DateTime? value) => value is { } v ? ToUtc(v) : null;
 
     /// <summary>Validasi statis anti-SSRF (https, tanpa user/query/fragment, literal privat ditolak) saat provider dikonfigurasi.</summary>
     private void ValidateBaseUrl(string baseUrl) => outbound.RequireHttpsUri(baseUrl, "invalid_base_url");

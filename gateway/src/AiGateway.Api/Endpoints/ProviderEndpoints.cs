@@ -29,6 +29,9 @@ public sealed record ImportModelsResponse(IReadOnlyList<ImportedModel> Created, 
 /// <summary>Provider milik tenant: URI + key milik tenant sendiri (BYOK). Key tidak pernah dikembalikan, hanya 4 karakter terakhir.</summary>
 public static class ProviderEndpoints
 {
+    /// <summary>Batas jumlah model per impor; satu permintaan tidak boleh menyisipkan ratusan baris.</summary>
+    private const int MaxImportedModels = 500;
+
     public static IEndpointRouteBuilder MapAdminProviders(this IEndpointRouteBuilder app)
     {
         var g = app.MapGroup("/admin/api/providers");
@@ -104,16 +107,19 @@ public static class ProviderEndpoints
         Guid id, ImportModelsRequest r, PublicIdResolver ids, ProvisioningService prov, AuditWriter audit, CancellationToken ct)
     {
         var providerId = await ids.ProviderAsync(id, ct);
+        if (r.UpstreamModels is { Length: > MaxImportedModels })
+            throw GatewayException.BadRequest("too_many_models", $"Maksimal {MaxImportedModels} model per impor.");
+        var upstreamModels = r.UpstreamModels?.Distinct().ToArray();
         List<ModelSpec> specs;
         switch (r.Source)
         {
             case "catalog":
-                specs = await prov.CatalogSpecsAsync(providerId, r.UpstreamModels, ct);
+                specs = await prov.CatalogSpecsAsync(providerId, upstreamModels, ct);
                 break;
             case "discovered":
-                if (r.UpstreamModels is not { Length: > 0 })
+                if (upstreamModels is not { Length: > 0 })
                     throw GatewayException.BadRequest("no_models", "upstreamModels wajib diisi untuk source=discovered.");
-                specs = r.UpstreamModels.Distinct().Select(m => new ModelSpec(m, m)).ToList();
+                specs = upstreamModels.Select(m => new ModelSpec(m, m)).ToList();
                 break;
             default:
                 throw GatewayException.BadRequest("invalid_source", "source harus catalog atau discovered.");

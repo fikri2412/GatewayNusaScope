@@ -3,6 +3,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using AiGateway.Core.Domain;
+using AiGateway.Core.Reports;
+using AiGateway.Core.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace AiGateway.Tests;
@@ -58,6 +60,12 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
     {
         await using var ctx = Db.NewContext();
         return await ctx.Models.IgnoreQueryFilters().Where(m => m.Id == internalId).Select(m => m.PublicId).SingleAsync();
+    }
+
+    private async Task<Guid> ProviderPublicIdAsync(long internalId)
+    {
+        await using var ctx = Db.NewContext();
+        return await ctx.Providers.IgnoreQueryFilters().Where(p => p.Id == internalId).Select(p => p.PublicId).SingleAsync();
     }
 
     private static string Iso(DateTime value) => Uri.EscapeDataString(value.ToString("O", CultureInfo.InvariantCulture));
@@ -399,7 +407,8 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
 
         var page = await BodyAsync(await SendAsync(HttpMethod.Get, "/admin/api/audit?page=1&pageSize=50", aToken));
         var items = page["items"]!.AsArray();
-        Assert.True(((int?)page["total"] ?? 0) >= 1);
+        await using (var auditCtx = Db.NewContext())
+            Assert.Equal(await auditCtx.AuditLogs.CountAsync(x => x.TenantId == a.TenantId), (int?)page["total"]); // persis baris tenant ini
         Assert.Equal(((int?)1, (int?)50), ((int?)page["pageNumber"], (int?)page["pageSize"]));
         var row = Assert.Single(items, i => (string?)i!["action"] == "project.create" && (string?)i!["entityId"] == projectA);
         Assert.Equal("project", (string?)row!["entity"]);
@@ -434,5 +443,216 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal(HttpStatusCode.BadRequest, (await SendAsync(HttpMethod.Patch, $"/admin/api/projects/{project}", token, new { status = "archived" })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await SendAsync(HttpMethod.Post, "/admin/api/keys", token, new { projectId = project, name = "x", allowedIps = new[] { "not-an-ip" } })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await SendAsync(HttpMethod.Post, "/admin/api/users/invite", token, new { email = "bad", displayName = "X", role = "viewer" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Provider_and_model_routes_isolate_tenants_and_reject_viewers()
+    {
+        var (a, aToken) = await OwnerTenantAsync();
+        var (b, bToken) = await OwnerTenantAsync();
+        var (_, _, viewerEmail) = await NewUserAsync(Roles.Viewer, a.TenantId);
+        var viewer = await LoginAsync(viewerEmail);
+        var foreignProvider = await ProviderPublicIdAsync(b.ProviderId);
+        var foreignModel = await ModelPublicIdAsync(b.ModelId);
+
+        // Id milik tenant lain: 404 untuk baca maupun semua aksi (termasuk id di dalam body).
+        foreach (var (method, path, body) in new (HttpMethod, string, object?)[]
+                 {
+                     (HttpMethod.Get, $"/admin/api/providers/{foreignProvider}", null),
+                     (HttpMethod.Patch, $"/admin/api/providers/{foreignProvider}", new { name = "hijack" }),
+                     (HttpMethod.Delete, $"/admin/api/providers/{foreignProvider}", null),
+                     (HttpMethod.Post, $"/admin/api/providers/{foreignProvider}/rotate-key", new { apiKey = "sk-hijack-1234567890" }),
+                     (HttpMethod.Post, $"/admin/api/providers/{foreignProvider}/discover", null),
+                     (HttpMethod.Post, $"/admin/api/providers/{foreignProvider}/import-models", new { source = "discovered", upstreamModels = new[] { "m" } }),
+                     (HttpMethod.Get, $"/admin/api/models/{foreignModel}", null),
+                     (HttpMethod.Patch, $"/admin/api/models/{foreignModel}", new { enabled = false }),
+                     (HttpMethod.Delete, $"/admin/api/models/{foreignModel}", null),
+                     (HttpMethod.Put, $"/admin/api/models/{foreignModel}/routes", new { routes = Array.Empty<object>() }),
+                     (HttpMethod.Post, $"/admin/api/models/{foreignModel}/prices", new { input = 1m, output = 2m }),
+                 })
+        {
+            var response = await SendAsync(method, path, aToken, body);
+            Assert.True(response.StatusCode == HttpStatusCode.NotFound, $"{method} {path} -> {(int)response.StatusCode}");
+        }
+
+        // Tanpa efek samping: provider/model tenant lain tetap utuh dan tidak muncul di daftar tenant A.
+        var bProviders = (await BodyAsync(await SendAsync(HttpMethod.Get, "/admin/api/providers", bToken))).AsArray();
+        Assert.Contains(bProviders, p => (Guid?)p!["id"] == foreignProvider);
+        var aProviders = (await BodyAsync(await SendAsync(HttpMethod.Get, "/admin/api/providers", aToken))).AsArray();
+        Assert.DoesNotContain(aProviders, p => (Guid?)p!["id"] == foreignProvider);
+        var aModels = (await BodyAsync(await SendAsync(HttpMethod.Get, "/admin/api/models", aToken))).AsArray();
+        Assert.DoesNotContain(aModels, m => (Guid?)m!["id"] == foreignModel);
+
+        // Viewer: baca daftar boleh, seluruh aksi tulis ditolak.
+        var ownProvider = await ProviderPublicIdAsync(a.ProviderId);
+        var ownModel = await ModelPublicIdAsync(a.ModelId);
+        foreach (var (method, path) in new (HttpMethod, string)[]
+                 {
+                     (HttpMethod.Post, "/admin/api/providers"),
+                     (HttpMethod.Patch, $"/admin/api/providers/{ownProvider}"),
+                     (HttpMethod.Delete, $"/admin/api/providers/{ownProvider}"),
+                     (HttpMethod.Post, $"/admin/api/providers/{ownProvider}/rotate-key"),
+                     (HttpMethod.Post, $"/admin/api/providers/{ownProvider}/discover"),
+                     (HttpMethod.Post, $"/admin/api/providers/{ownProvider}/import-models"),
+                     (HttpMethod.Post, "/admin/api/models"),
+                     (HttpMethod.Patch, $"/admin/api/models/{ownModel}"),
+                     (HttpMethod.Delete, $"/admin/api/models/{ownModel}"),
+                     (HttpMethod.Put, $"/admin/api/models/{ownModel}/routes"),
+                     (HttpMethod.Post, $"/admin/api/models/{ownModel}/prices"),
+                 })
+        {
+            var response = await SendAsync(method, path, viewer, body: new { });
+            Assert.True(response.StatusCode == HttpStatusCode.Forbidden, $"{method} {path} -> {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+        }
+
+        Assert.Equal(HttpStatusCode.OK, (await SendAsync(HttpMethod.Get, "/admin/api/providers", viewer)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await SendAsync(HttpMethod.Get, "/admin/api/models", viewer)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Importing_more_models_than_the_cap_is_rejected()
+    {
+        var (s, token) = await OwnerTenantAsync();
+        var provider = await ProviderPublicIdAsync(s.ProviderId);
+
+        var response = await SendAsync(HttpMethod.Post, $"/admin/api/providers/{provider}/import-models", token,
+            new { source = "discovered", upstreamModels = Enumerable.Range(0, 501).Select(i => $"model-{i}").ToArray() });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("too_many_models", ErrorCode(await BodyAsync(response)));
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.False(await ctx.Models.AnyAsync(m => m.Alias == "model-0"));
+    }
+
+    [Fact]
+    public async Task Model_creation_rejects_invalid_price_tiers_and_currency_with_400()
+    {
+        var (s, token) = await OwnerTenantAsync();
+        var provider = await ProviderPublicIdAsync(s.ProviderId);
+
+        object NewModel(string alias, object price) => new
+        {
+            alias, routes = new[] { new { providerId = provider, upstreamModel = "real-model" } }, price,
+        };
+
+        var negativeTier = await SendAsync(HttpMethod.Post, "/admin/api/models", token, NewModel("neg-tier",
+            new { input = 1m, output = 2m, tiers = new[] { new { minInputTokens = 1000, input = -5m, output = 1m } } }));
+        Assert.Equal(HttpStatusCode.BadRequest, negativeTier.StatusCode);
+        Assert.Equal("invalid_price", ErrorCode(await BodyAsync(negativeTier)));
+
+        var duplicateTiers = await SendAsync(HttpMethod.Post, "/admin/api/models", token, NewModel("dup-tier",
+            new { input = 1m, output = 2m, tiers = new[]
+                {
+                    new { minInputTokens = 1000, input = 2m, output = 3m },
+                    new { minInputTokens = 1000, input = 4m, output = 5m },
+                } }));
+        Assert.Equal(HttpStatusCode.BadRequest, duplicateTiers.StatusCode);
+        Assert.Equal("invalid_price", ErrorCode(await BodyAsync(duplicateTiers)));
+
+        var longCurrency = await SendAsync(HttpMethod.Post, "/admin/api/models", token, NewModel("bad-currency",
+            new { input = 1m, output = 2m, currency = "USDD" }));
+        Assert.Equal(HttpStatusCode.BadRequest, longCurrency.StatusCode);
+        Assert.Equal("invalid_currency", ErrorCode(await BodyAsync(longCurrency)));
+
+        var hugePrice = await SendAsync(HttpMethod.Post, "/admin/api/models", token, NewModel("huge-price",
+            new { input = 10_000_000_000_000m, output = 2m }));
+        Assert.Equal(HttpStatusCode.BadRequest, hugePrice.StatusCode);
+        Assert.Equal("invalid_price", ErrorCode(await BodyAsync(hugePrice)));
+
+        // Tidak ada model, route, atau harga yang tertinggal dari empat permintaan itu.
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.Empty(await ctx.Models.Where(m => m.Alias.EndsWith("-tier") || m.Alias == "bad-currency" || m.Alias == "huge-price").ToListAsync());
+        Assert.Empty(await ctx.ModelPrices.Where(p => p.InputPricePer1M < 0).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Rejected_optional_fields_do_not_leave_the_resource_behind()
+    {
+        var (s, token) = await OwnerTenantAsync();
+        var projectName = $"partial-{Guid.NewGuid():N}"[..24];
+
+        var project = await SendAsync(HttpMethod.Post, "/admin/api/projects", token, new { name = projectName, contentRetentionDays = 99_999 });
+        Assert.Equal(HttpStatusCode.BadRequest, project.StatusCode);
+        Assert.Equal("invalid_retention", ErrorCode(await BodyAsync(project)));
+
+        var modelAlias = $"partial-{Guid.NewGuid():N}"[..24];
+        var provider = await ProviderPublicIdAsync(s.ProviderId);
+        var model = await SendAsync(HttpMethod.Post, "/admin/api/models", token, new
+        {
+            alias = modelAlias, description = new string('x', 501),
+            routes = new[] { new { providerId = provider, upstreamModel = "real-model" } },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, model.StatusCode);
+        Assert.Equal("invalid_description", ErrorCode(await BodyAsync(model)));
+
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.False(await ctx.Projects.AnyAsync(p => p.Name == projectName));
+        Assert.False(await ctx.Models.AnyAsync(m => m.Alias == modelAlias));
+    }
+
+    [Fact]
+    public async Task Huge_page_numbers_return_an_empty_page_instead_of_an_error()
+    {
+        var (s, token) = await OwnerTenantAsync();
+        await PostChatAsync(s.ApiKey, Chat());
+        var from = Iso(DateTime.UtcNow.AddDays(-1));
+        var to = Iso(DateTime.UtcNow.AddDays(1));
+
+        var response = await SendAsync(HttpMethod.Get, $"/admin/api/usage/logs?from={from}&to={to}&page=10737420&pageSize=200", token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await BodyAsync(response);
+        Assert.Equal(1, (int?)body["total"]);
+        Assert.Empty(body["items"]!.AsArray());
+        Assert.Equal(UsageReports.MaxPageNumber, (int?)body["pageNumber"]); // diklem, bukan overflow ke offset negatif
+
+        var audit = await SendAsync(HttpMethod.Get, "/admin/api/audit?page=10737420&pageSize=200", token);
+        Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+        Assert.Empty((await BodyAsync(audit))["items"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task Usage_export_neutralises_formulas_and_escapes_quotes()
+    {
+        var (a, aToken) = await OwnerTenantAsync();
+        await PostChatAsync(a.ApiKey, Chat(extra: ",\"user\":\"=HYPERLINK(\\\"http://evil\\\")\""), r => r.Headers.Add("X-Gateway-Tags", "a,\"b\""));
+        var from = Iso(DateTime.UtcNow.AddDays(-1));
+        var to = Iso(DateTime.UtcNow.AddDays(1));
+
+        var response = await SendAsync(HttpMethod.Get, $"/admin/api/usage/export?from={from}&to={to}", aToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var lines = (await response.Content.ReadAsStringAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(2, lines.Length); // header + satu baris
+        Assert.Contains("\"'=HYPERLINK(\"\"http://evil\"\")\"", lines[1]); // rumus dinetralkan lalu di-quote
+        Assert.Contains("\"a,\"\"b\"\"\"", lines[1]);
+    }
+
+    [Fact]
+    public async Task Provider_keys_never_reach_audit_rows_or_responses()
+    {
+        var (s, token) = await OwnerTenantAsync();
+
+        var created = await SendAsync(HttpMethod.Post, "/admin/api/providers", token,
+            new { name = "audited", baseUrl = "https://audited.test/v1", apiKey = UpstreamKey });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var providerId = (string)(await BodyAsync(created))["id"]!;
+        Assert.DoesNotContain(UpstreamKey, await created.Content.ReadAsStringAsync());
+
+        var rotated = await SendAsync(HttpMethod.Post, $"/admin/api/providers/{providerId}/rotate-key", token, new { apiKey = UpstreamKey + "-baru" });
+        Assert.Equal(HttpStatusCode.NoContent, rotated.StatusCode);
+        Assert.DoesNotContain(UpstreamKey, await rotated.Content.ReadAsStringAsync());
+
+        var listJson = await (await SendAsync(HttpMethod.Get, "/admin/api/providers", token)).Content.ReadAsStringAsync();
+        Assert.Contains(providerId, listJson);
+        Assert.Contains(ProviderKeyProtector.Hint(UpstreamKey), listJson); // hanya 4 karakter terakhir
+        Assert.DoesNotContain(UpstreamKey, listJson);
+
+        await using var ctx = Db.NewContext();
+        var rows = await ctx.AuditLogs.AsNoTracking().Where(x => x.TenantId == s.TenantId).ToListAsync();
+        Assert.Contains(rows, r => r.Action == "provider.create" && r.EntityId == providerId);
+        Assert.Contains(rows, r => r.Action == "provider.rotate_key" && r.EntityId == providerId);
+        Assert.All(rows, r => Assert.DoesNotContain(UpstreamKey, r.DetailJson ?? ""));
+        var create = rows.Single(r => r.Action == "provider.create" && r.EntityId == providerId);
+        Assert.NotNull(create.UserId);
     }
 }

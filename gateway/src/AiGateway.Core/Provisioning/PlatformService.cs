@@ -7,6 +7,7 @@ using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
 using AiGateway.Core.Proxy;
 using AiGateway.Core.Reports;
+using AiGateway.Core.Security;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
@@ -42,7 +43,8 @@ public sealed record PlatformAuditRow(long Id, long? UserId, string Action, stri
 /// dibaca lewat jalur eksplisit: tabel tanpa filter, operator IgnoreQueryFilters, atau konteks tenant sementara.
 /// </summary>
 public sealed partial class PlatformService(
-    GatewayDbContext db, ProvisioningService provisioning, UserAdminService users, UsageReports reports, OpenCodeCatalogSync sync)
+    GatewayDbContext db, ProvisioningService provisioning, UserAdminService users, UsageReports reports, OpenCodeCatalogSync sync,
+    OutboundSecurityPolicy outbound)
 {
     // --- plan ----------------------------------------------------------------------------------
 
@@ -74,7 +76,13 @@ public sealed partial class PlatformService(
         if (await db.Tenants.AnyAsync(t => t.PlanId == id, ct))
             throw GatewayException.Conflict("plan_in_use", "Plan masih dipakai tenant dan tidak bisa dihapus.");
         db.Plans.Remove(plan);
-        await db.SaveChangesAsync(ct);
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 547 })
+        {
+            // Tenant memakai plan ini di sela pemeriksaan dan penghapusan; foreign key menolak.
+            db.ChangeTracker.Clear();
+            throw GatewayException.Conflict("plan_in_use", "Plan masih dipakai tenant dan tidak bisa dihapus.");
+        }
     }
 
     private static void ApplyLimits(Plan plan, PlanSpec spec)
@@ -166,7 +174,7 @@ public sealed partial class PlatformService(
     {
         if (from is { } f && to is { } t && t < f) throw GatewayException.BadRequest("invalid_range", "'to' tidak boleh sebelum 'from'.");
         pageSize = Math.Clamp(pageSize, 1, UsageReports.MaxPageSize);
-        page = Math.Max(page, 1);
+        page = Math.Clamp(page, 1, UsageReports.MaxPageNumber); // batas atas: offset tidak boleh overflow int
 
         var q = db.AuditLogs.AsNoTracking();
         if (from is { } fromValue) q = q.Where(a => a.CreatedAt >= fromValue);
@@ -269,7 +277,7 @@ public sealed partial class PlatformService(
         return (templateId, upstream);
     }
 
-    private static void ApplyTemplate(ProviderTemplate template, TemplateSpec spec)
+    private void ApplyTemplate(ProviderTemplate template, TemplateSpec spec)
     {
         var type = spec.Type ?? ProviderTypes.OpenAi;
         if (type != ProviderTypes.OpenAi) throw GatewayException.BadRequest("invalid_type", "type harus openai.");
@@ -294,9 +302,12 @@ public sealed partial class PlatformService(
         else template.SyncKind = spec.SyncKind;
 
         if (string.IsNullOrEmpty(spec.SyncUrl)) template.SyncUrl = null;
-        else if (spec.SyncUrl.Length > 500 || !Uri.TryCreate(spec.SyncUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            throw GatewayException.BadRequest("invalid_sync_url", "syncUrl harus URL http(s) mutlak.");
-        else template.SyncUrl = spec.SyncUrl;
+        else
+        {
+            // Sinkronisasi selalu lewat kebijakan keluar (https); URL lain tidak akan bisa dipakai.
+            outbound.RequireHttpsUri(spec.SyncUrl, "invalid_sync_url");
+            template.SyncUrl = spec.SyncUrl;
+        }
 
         template.Enabled = spec.Enabled;
     }
@@ -351,10 +362,13 @@ public sealed partial class PlatformService(
         }
     }
 
+    /// <summary>Pola <c>code</c> template/katalog: huruf kecil, angka, '.', '_', '-', maksimal 50 karakter.</summary>
+    public static bool IsValidCode(string? value) => CodeRegex().IsMatch(value?.Trim() ?? "");
+
     private static string RequireCode(string? value)
     {
         value = value?.Trim() ?? "";
-        if (!CodeRegex().IsMatch(value))
+        if (!IsValidCode(value))
             throw GatewayException.BadRequest("invalid_code", "code harus huruf kecil, angka, '.', '_', atau '-' (maks 50 karakter).");
         return value;
     }
@@ -367,12 +381,11 @@ public sealed partial class PlatformService(
         return value;
     }
 
-    private static string RequireBaseUrl(string? value)
+    /// <summary>Template adalah resep koneksi provider, jadi URL-nya wajib lolos kebijakan keluar yang sama (https).</summary>
+    private string RequireBaseUrl(string? value)
     {
         value = value?.Trim() ?? "";
-        if (value.Length > 500 || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
-            throw GatewayException.BadRequest("invalid_base_url", "baseUrl harus URL http(s) mutlak tanpa user, query, atau fragment.");
+        outbound.RequireHttpsUri(value, "invalid_base_url");
         return value;
     }
 

@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
 using Microsoft.EntityFrameworkCore;
@@ -25,8 +24,8 @@ public sealed class UsageReports(GatewayDbContext db)
     public const int MaxPageSize = 200;
     public const int MaxExportRows = 100_000;
     public const int MaxRangeDays = 366;
-
-    public static readonly string[] GroupBys = ["day", "project", "model", "key"];
+    /// <summary>Batas nomor halaman; nomor yang lebih besar diklem supaya offset tidak overflow.</summary>
+    public const int MaxPageNumber = 100_000;
 
     public async Task<List<UsageRow>> SummaryAsync(DateOnly from, DateOnly to, string groupBy, CancellationToken ct)
     {
@@ -82,26 +81,26 @@ public sealed class UsageReports(GatewayDbContext db)
     {
         ValidateRange(filter.From, filter.To);
         pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
-        page = Math.Max(page, 1);
+        page = Math.Clamp(page, 1, MaxPageNumber); // batas atas: offset (page-1)*pageSize tidak boleh overflow int
         var q = Filtered(filter);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(l => l.Id).Skip((page - 1) * pageSize).Take(pageSize).Select(Row).ToListAsync(ct);
         return new Page<UsageLogRow>(items, total, page, pageSize);
     }
 
-    /// <summary>CSV (UTF-8). Sel yang diawali = + - @ diberi tanda kutip agar tidak dieksekusi sebagai rumus spreadsheet.</summary>
-    public async Task WriteCsvAsync(UsageFilter filter, Stream output, CancellationToken ct)
+    /// <summary>Jumlah baris log yang cocok dengan filter, dipakai ekspor untuk memeriksa ukuran sebelum menulis.</summary>
+    public Task<int> CountAsync(UsageFilter filter, CancellationToken ct)
     {
         ValidateRange(filter.From, filter.To);
-        await using var writer = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true);
-        await writer.WriteLineAsync("id,created_at,request_id,project_id,api_key_id,model_id,status,http_status,denied_reason,input_tokens,output_tokens,cached_tokens,reasoning_tokens,cost,latency_ms,attempts,fallback_used,end_user,tags");
-        await foreach (var l in Filtered(filter).OrderBy(l => l.Id).Take(MaxExportRows).Select(Row).AsAsyncEnumerable().WithCancellation(ct))
-        {
-            await writer.WriteLineAsync(string.Join(',',
-                l.Id, l.CreatedAt.ToString("O", CultureInfo.InvariantCulture), l.RequestId, l.ProjectId, l.ApiKeyId, l.ModelId,
-                Csv(l.Status), l.HttpStatus, Csv(l.DeniedReason), l.InputTokens, l.OutputTokens, l.CachedTokens, l.ReasoningTokens,
-                l.Cost.ToString(CultureInfo.InvariantCulture), l.LatencyMs, l.Attempts, l.FallbackUsed, Csv(l.EndUser), Csv(l.Tags)));
-        }
+        return Filtered(filter).CountAsync(ct);
+    }
+
+    /// <summary>Tolak ekspor yang melebihi <see cref="MaxExportRows"/> sebelum satu byte pun dikirim ke klien.</summary>
+    public static void EnsureExportSize(int total)
+    {
+        if (total > MaxExportRows)
+            throw GatewayException.BadRequest("export_too_large",
+                $"Ekspor maksimal {MaxExportRows} baris; persempit rentang atau filter lalu coba lagi.");
     }
 
     private IQueryable<Domain.UsageLog> Filtered(UsageFilter f)

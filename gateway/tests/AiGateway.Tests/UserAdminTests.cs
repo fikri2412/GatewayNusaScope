@@ -1,8 +1,11 @@
 using AiGateway.Core.Auth;
 using AiGateway.Core.Common;
 using AiGateway.Core.Domain;
+using AiGateway.Core.Options;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace AiGateway.Tests;
 
@@ -101,5 +104,53 @@ public class UserAdminTests(TestDb db) : GatewayTestBase(db)
     {
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             WithServicesAsync<List<User>>(null, (sp, _) => sp.GetRequiredService<UserAdminService>().ListAsync(default)));
+    }
+
+    [Fact]
+    public async Task Listing_users_is_capped_at_500_rows()
+    {
+        var owner = await NewUserAsync(Roles.Owner);
+        await using (var ctx = Db.NewContext(owner.TenantId))
+        {
+            ctx.Users.AddRange(Enumerable.Range(0, 501).Select(i => new User
+            {
+                TenantId = owner.TenantId, Email = $"bulk-{i:D4}@example.test", DisplayName = "Bulk",
+                PasswordHash = "x", Role = Roles.Viewer,
+            }));
+            await ctx.SaveChangesAsync();
+        }
+
+        var listed = await WithUsersAsync(owner.TenantId, u => u.ListAsync(default));
+        Assert.Equal(500, listed.Count);
+    }
+
+    [Fact]
+    public async Task Revocation_timestamps_use_the_injected_clock()
+    {
+        var owner = await NewUserAsync(Roles.Owner);
+        var member = await NewUserAsync(Roles.Admin, owner.TenantId);
+        var clock = new ManualClock(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero));
+
+        await using var ctx = Db.NewContext(owner.TenantId);
+        var auth = new AuthService(ctx, new PasswordHasher<User>(), Factory.Services.GetRequiredService<IOptions<AuthOptions>>(), clock);
+        var users = new UserAdminService(ctx, auth, clock);
+        var session = new RefreshToken
+        {
+            UserId = member.UserId, TokenHash = AuthService.HashToken("seed-refresh"), ExpiresAt = clock.Now.UtcDateTime.AddDays(1),
+        };
+        ctx.RefreshTokens.Add(session);
+        await ctx.SaveChangesAsync();
+
+        await users.UpdateAsync(member.UserId, Roles.Viewer, null, owner.UserId, default);
+
+        var revokedAt = (await ctx.RefreshTokens.AsNoTracking().SingleAsync(t => t.Id == session.Id)).RevokedAt;
+        Assert.Equal<DateTime?>(clock.Now.UtcDateTime, revokedAt);
+    }
+
+    /// <summary>Jam manual untuk test yang membutuhkan waktu beku.</summary>
+    private sealed class ManualClock(DateTimeOffset start) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = start;
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 }

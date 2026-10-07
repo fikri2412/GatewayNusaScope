@@ -25,9 +25,4 @@ public sealed class PublicIdResolver(GatewayDbContext db)
     public async Task<long> ApiKeyAsync(Guid id, CancellationToken ct) =>
         await db.ApiKeys.Where(k => k.PublicId == id).Select(k => (long?)k.Id).FirstOrDefaultAsync(ct)
         ?? throw GatewayException.NotFound("API key");
-
-    /// <summary>Tenant tidak punya query filter; dipakai platform admin.</summary>
-    public async Task<long> TenantAsync(Guid id, CancellationToken ct) =>
-        await db.Tenants.Where(t => t.PublicId == id).Select(t => (long?)t.Id).FirstOrDefaultAsync(ct)
-        ?? throw GatewayException.NotFound("Tenant");
 }

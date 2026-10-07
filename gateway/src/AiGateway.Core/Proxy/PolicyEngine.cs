@@ -41,18 +41,12 @@ public sealed class PolicyEngine(GatewayDbContext db, RequestRateLimiter limiter
         {
             (PolicyScopes.Tenant, caller.TenantId), (PolicyScopes.Project, caller.ProjectId), (PolicyScopes.Key, caller.Key.Id),
         };
-        var policies = (await db.Policies.AsNoTracking()
-                .Where(p => p.Enabled && ((p.Scope == PolicyScopes.Tenant && p.ScopeId == caller.TenantId)
-                                          || (p.Scope == PolicyScopes.Project && p.ScopeId == caller.ProjectId)
-                                          || (p.Scope == PolicyScopes.Key && p.ScopeId == caller.Key.Id)))
-                .ToListAsync(ct))
-            .ToDictionary(p => p.Scope);
+        var policies = await ActivePoliciesAsync(caller, ct);
 
         // 1. Daftar model (irisan semua scope yang punya daftar).
-        foreach (var (name, _) in scopes)
-            if (policies.TryGetValue(name, out var p) && p.AllowedModelsJson is not null && !Allows(p.AllowedModelsJson, modelAlias))
-                return Deny(403, ErrorTypes.Permission, "model_not_allowed",
-                    $"The model '{modelAlias}' is not allowed for this {name}.", $"model_not_allowed:{name}", null);
+        if (DeniedModelScope(policies, modelAlias) is { } deniedScope)
+            return Deny(403, ErrorTypes.Permission, "model_not_allowed",
+                $"The model '{modelAlias}' is not allowed for this {deniedScope}.", $"model_not_allowed:{deniedScope}", null);
 
         // 2. Batas plan tenant, lalu kuota dan anggaran tiap scope.
         var plan = await (from t in db.Tenants.AsNoTracking() where t.Id == caller.TenantId
@@ -93,6 +87,30 @@ public sealed class PolicyEngine(GatewayDbContext db, RequestRateLimiter limiter
 
         int? maxOut = policies.Values.Where(p => p.MaxTokensPerRequest is not null).Select(p => p.MaxTokensPerRequest).Min();
         return new PolicyResult(null, maxOut);
+    }
+
+    /// <summary>
+    /// Kebijakan aktif tenant, project, dan key milik pemanggil, keyed by scope (unik per scope). Dipakai engine chat
+    /// dan endpoint <c>/v1/models</c> supaya keduanya memakai daftar model yang sama.
+    /// </summary>
+    public async Task<Dictionary<string, Policy>> ActivePoliciesAsync(GatewayCaller caller, CancellationToken ct) =>
+        (await db.Policies.AsNoTracking()
+            .Where(p => p.Enabled && ((p.Scope == PolicyScopes.Tenant && p.ScopeId == caller.TenantId)
+                                      || (p.Scope == PolicyScopes.Project && p.ScopeId == caller.ProjectId)
+                                      || (p.Scope == PolicyScopes.Key && p.ScopeId == caller.Key.Id)))
+            .ToListAsync(ct))
+        .ToDictionary(p => p.Scope);
+
+    /// <summary>
+    /// Irisan daftar model semua scope: NULL bila alias boleh dipakai, atau nama scope pertama yang menolaknya
+    /// (urutan tenant -> project -> key, agar <c>denied_reason</c> deterministik; daftar rusak = tolak).
+    /// </summary>
+    public static string? DeniedModelScope(IReadOnlyDictionary<string, Policy> policies, string alias)
+    {
+        foreach (var name in new[] { PolicyScopes.Tenant, PolicyScopes.Project, PolicyScopes.Key })
+            if (policies.TryGetValue(name, out var p) && p.AllowedModelsJson is not null && !Allows(p.AllowedModelsJson, alias))
+                return name;
+        return null;
     }
 
     private async Task<ScopeUsage> UsageAsync(string scope, long id, DateOnly today, DateOnly monthStart, CancellationToken ct)

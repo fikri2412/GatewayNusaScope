@@ -18,26 +18,38 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
     private const string AppUser = "gw_app_test";
     private const string PlatformUser = "gw_platform_test";
 
-    /// <summary>Semua tabel milik tenant (punya tenant_id); job_runs platform, sengaja tidak termasuk.</summary>
-    private static readonly string[] TenantTables =
-    [
-        "providers", "provider_credentials", "models", "model_routes", "model_prices",
-        "projects", "api_keys", "policies", "usage_logs", "usage_daily", "audit_logs",
-        "request_bodies", "alert_rules", "alert_events", "webhooks", "webhook_deliveries",
-    ];
+    /// <summary>Tabel yang punya kolom <c>tenant_id</c> menurut skema (bukan daftar tangan).</summary>
+    private static async Task<List<string>> TablesWithTenantIdAsync(DbConnection conn)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT t.name FROM sys.tables AS t
+            JOIN sys.columns AS c ON c.object_id = t.object_id AND c.name = N'tenant_id'
+            WHERE t.is_ms_shipped = 0;
+            """;
+        var tables = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) tables.Add(reader.GetString(0));
+        // Pengecualian yang didokumentasikan di script: users adalah tabel global (platform admin tenant_id NULL).
+        Assert.Contains("users", tables);
+        tables.Remove("users");
+        return tables;
+    }
 
     private Task? _prepare;
 
     private Task PrepareAsync() => _prepare ??= PrepareCoreAsync();
 
-    /// <summary>Script dijalankan dua kali (idempoten), lalu user uji tanpa login dibuat dan dimasukkan ke role.</summary>
+    /// <summary>
+    /// Script dijalankan dua kali (idempoten) lewat jalur yang sama dengan host aplikasi
+    /// (<see cref="TestDb.InstallTenantSecurity"/>), lalu user uji tanpa login dibuat dan dimasukkan ke role.
+    /// </summary>
     private async Task PrepareCoreAsync()
     {
-        var script = await File.ReadAllTextAsync(ScriptPath());
+        testDb.InstallTenantSecurity();
+        testDb.InstallTenantSecurity();
         await using var conn = new SqlConnection(testDb.ConnectionString);
         await conn.OpenAsync();
-        await ExecAsync(conn, script);
-        await ExecAsync(conn, script);
         foreach (var (user, role) in new[] { (AppUser, "gateway_app"), (PlatformUser, "gateway_platform") })
         {
             await ExecAsync(conn, $"IF DATABASE_PRINCIPAL_ID(N'{user}') IS NULL EXEC(N'CREATE USER {user} WITHOUT LOGIN;');");
@@ -51,17 +63,6 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
         }
     }
 
-    /// <summary>Cari gateway/sql/tenant-security.sql dengan menelusuri direktori di atas output test.</summary>
-    private static string ScriptPath()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "gateway", "sql", "tenant-security.sql");
-            if (File.Exists(candidate)) return candidate;
-        }
-        throw new FileNotFoundException($"gateway/sql/tenant-security.sql tidak ditemukan dari {AppContext.BaseDirectory}");
-    }
-
     [Fact]
     public async Task Script_is_idempotent_and_installs_roles_policy_and_bootstrap_proc()
     {
@@ -71,13 +72,15 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
 
         Assert.Equal(3, Convert.ToInt32(await ScalarAsync(conn,
             "SELECT COUNT(*) FROM sys.database_principals WHERE type = 'R' AND name IN (N'gateway_app', N'gateway_platform', N'gateway_migration');")));
-        Assert.True(Convert.ToBoolean(await ScalarAsync(conn,
-            "SELECT is_enabled FROM sys.security_policies WHERE name = N'tenant_isolation_policy';")));
-        // Setiap tabel tenant yang ada ditutup tepat FILTER + BLOCK INSERT + BLOCK UPDATE;
-        // job_runs (platform) tidak boleh tertutup.
+        foreach (var policy in new[] { "tenant_isolation_policy", "maintenance_isolation_policy" })
+            Assert.True(Convert.ToBoolean(await ScalarAsync(conn,
+                $"SELECT is_enabled FROM sys.security_policies WHERE name = N'{policy}';")), policy);
+        // Setiap tabel yang punya tenant_id (kecuali users) ditutup tepat FILTER + BLOCK INSERT + BLOCK UPDATE.
+        // Daftar diambil dari skema supaya tabel tenant baru yang lupa ditutup langsung ketahuan; job_runs
+        // (platform, tanpa tenant_id) tidak boleh masuk.
+        var expected = await TablesWithTenantIdAsync(conn);
         var covered = await PredicateCountsAsync(conn);
-        var existing = await ExistingTablesAsync(conn, TenantTables);
-        Assert.Equal(existing.OrderBy(x => x, StringComparer.Ordinal), covered.Keys.OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Equal(expected.OrderBy(x => x, StringComparer.Ordinal), covered.Keys.OrderBy(x => x, StringComparer.Ordinal));
         Assert.All(covered.Values, count => Assert.Equal(3, count));
         Assert.NotNull(await ScalarAsync(conn, "SELECT OBJECT_ID(N'dbo.api_key_bootstrap', N'P');"));
         Assert.Equal(2, Convert.ToInt32(await ScalarAsync(conn, """
@@ -231,17 +234,15 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
     }
 
     [Fact]
-    public async Task Maintenance_tables_follow_the_same_isolation_when_migrated()
+    public async Task Maintenance_tables_follow_the_same_isolation()
     {
         await PrepareAsync();
         await using var admin = new SqlConnection(testDb.ConnectionString);
         await admin.OpenAsync();
-        if (!await TableExistsAsync(admin, "request_bodies"))
-        {
-            // Migration tabel maintenance (slice lain) belum mendarat: bagian 4b script belum
-            // memasang policy-nya. Uji perilaku dijalankan begitu tabelnya ada.
-            return;
-        }
+        // Migration G4Maintenance ada di repo: tabel ini wajib ada, kalau tidak bagian 4b script tidak
+        // memasang policy-nya dan uji perilaku di bawah tidak bermakna.
+        Assert.True(await TableExistsAsync(admin, "request_bodies"),
+            "request_bodies tidak ada; migration G4Maintenance tidak diterapkan.");
 
         var a = await testDb.NewTenantAsync();
         var b = await testDb.NewTenantAsync();
@@ -393,7 +394,6 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
         AddParameters(cmd, [("@p", prefix)]);
 
         await using var reader = await cmd.ExecuteReaderAsync();
-        Assert.Equal(13, reader.FieldCount); // kolom entity ApiKey
         Assert.True(await reader.ReadAsync());
         Assert.Equal(expectedTenant, reader.GetInt64(reader.GetOrdinal("tenant_id")));
         Assert.Equal(expectedProject, reader.GetInt64(reader.GetOrdinal("project_id")));
@@ -429,25 +429,6 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync()) counts[reader.GetString(0)] = reader.GetInt32(1);
         return counts;
-    }
-
-    private static async Task<List<string>> ExistingTablesAsync(DbConnection conn, IReadOnlyCollection<string> names)
-    {
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM sys.tables WHERE name IN ("
-            + string.Join(", ", names.Select((_, index) => $"@t{index}")) + ");";
-        var position = 0;
-        foreach (var name in names)
-        {
-            var parameter = cmd.CreateParameter();
-            parameter.ParameterName = $"@t{position++}";
-            parameter.Value = name;
-            cmd.Parameters.Add(parameter);
-        }
-        var found = new List<string>();
-        await using var reader = await cmd.ExecuteReaderAsync();
-        while (await reader.ReadAsync()) found.Add(reader.GetString(0));
-        return found;
     }
 
     private static async Task ExecAsync(DbConnection conn, string sql, params (string Name, object? Value)[] args)

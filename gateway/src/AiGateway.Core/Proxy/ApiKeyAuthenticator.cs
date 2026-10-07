@@ -11,7 +11,7 @@ namespace AiGateway.Core.Proxy;
 /// <param name="Failure">Terisi bila permintaan harus ditolak.</param>
 public sealed record AuthResult(GatewayCaller? Caller, GatewayResponse? Failure, string? DeniedReason);
 
-public sealed class ApiKeyAuthenticator(GatewayDbContext db)
+public sealed class ApiKeyAuthenticator(GatewayDbContext db, TimeProvider clock)
 {
     private static readonly TimeSpan LastUsedGranularity = TimeSpan.FromMinutes(1);
 
@@ -50,7 +50,7 @@ public sealed class ApiKeyAuthenticator(GatewayDbContext db)
             return Fail(401, ErrorTypes.Authentication, "invalid_api_key", "Incorrect API key provided.");
 
         var caller = new GatewayCaller(key, requestId, clientIp?.ToString(), Truncate(userAgent, 300), Truncate(tags, 400));
-        var now = DateTime.UtcNow;
+        var now = clock.GetUtcNow().UtcDateTime;
         db.CurrentTenantId = key.TenantId;
         if (key.RevokedAt is not null)
             return Deny(caller, 401, ErrorTypes.Authentication, "api_key_revoked", "This API key has been revoked.");

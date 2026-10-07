@@ -12,10 +12,12 @@ public sealed record InvitedUser(User User, string InviteToken);
 /// Kelola pengguna satu tenant (diakses pemilik tenant). Tabel <c>users</c> tidak punya query filter global
 /// (login perlu mencari lintas tenant), jadi semua query di sini difilter eksplisit ke tenant konteks.
 /// </summary>
-public sealed class UserAdminService(GatewayDbContext db, AuthService auth)
+public sealed class UserAdminService(GatewayDbContext db, AuthService auth, TimeProvider clock)
 {
     private static readonly TimeSpan InviteTtl = TimeSpan.FromDays(7);
     private static readonly TimeSpan ResetTtl = TimeSpan.FromDays(1);
+
+    private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
     private IQueryable<User> TenantUsers
     {
@@ -29,7 +31,7 @@ public sealed class UserAdminService(GatewayDbContext db, AuthService auth)
     }
 
     public Task<List<User>> ListAsync(CancellationToken ct) =>
-        TenantUsers.AsNoTracking().OrderBy(u => u.Email).ToListAsync(ct);
+        TenantUsers.AsNoTracking().OrderBy(u => u.Email).Take(500).ToListAsync(ct);
 
     public async Task<InvitedUser> InviteAsync(string email, string displayName, string role, CancellationToken ct)
     {
@@ -74,7 +76,7 @@ public sealed class UserAdminService(GatewayDbContext db, AuthService auth)
         user.SecurityStamp = Guid.NewGuid().ToString("N"); // token lama berhenti berlaku
         await db.SaveChangesAsync(ct);
         await db.RefreshTokens.Where(t => t.UserId == user.Id && t.RevokedAt == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, DateTime.UtcNow), ct);
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, Now), ct);
         return user;
     }
 

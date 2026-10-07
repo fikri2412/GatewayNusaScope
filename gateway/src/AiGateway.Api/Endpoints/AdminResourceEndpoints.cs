@@ -99,9 +99,6 @@ public static class AdminResourceEndpoints
 
     // --- project -------------------------------------------------------------------------------
 
-    private static IQueryable<ProjectDto> ProjectQuery(GatewayDbContext db) =>
-        db.Projects.AsNoTracking().Select(p => new ProjectDto(p.PublicId, p.Name, p.Status, p.LogContent, p.ContentRetentionDays, p.CreatedAt));
-
     private static async Task<IResult> ListProjectsAsync(GatewayDbContext db, CancellationToken ct) =>
         Results.Ok(await db.Projects.AsNoTracking().OrderBy(p => p.Name).Take(500)
             .Select(p => new ProjectDto(p.PublicId, p.Name, p.Status, p.LogContent, p.ContentRetentionDays, p.CreatedAt))
@@ -115,9 +112,7 @@ public static class AdminResourceEndpoints
     private static async Task<IResult> CreateProjectAsync(
         CreateProjectRequest r, GatewayDbContext db, ProvisioningService prov, AuditWriter audit, CancellationToken ct)
     {
-        var project = await prov.CreateProjectAsync(r.Name ?? "", ct);
-        if (r.LogContent is not null || r.ContentRetentionDays is not null)
-            await prov.UpdateProjectAsync(project.Id, new ProjectPatch(LogContent: r.LogContent, ContentRetentionDays: r.ContentRetentionDays), ct);
+        var project = await prov.CreateProjectAsync(r.Name ?? "", ct, r.LogContent, r.ContentRetentionDays);
         await audit.WriteAsync("project.create", "project", project.PublicId.ToString(), new { project.Name });
         return Results.Created($"/admin/api/projects/{project.PublicId}", await db.Projects.AsNoTracking().Where(p => p.PublicId == project.PublicId)
             .Select(p => new ProjectDto(p.PublicId, p.Name, p.Status, p.LogContent, p.ContentRetentionDays, p.CreatedAt))
@@ -365,12 +360,13 @@ public static class AdminResourceEndpoints
         return Results.Ok(await RemapLogsAsync(result, db, ct));
     }
 
-    /// <summary>Ekspor CSV dengan id publik; pagar baris sama dengan basis data (MaxExportRows).</summary>
+    /// <summary>Ekspor CSV dengan id publik; rentang yang melebihi <see cref="UsageReports.MaxExportRows"/> ditolak sebelum ada byte yang dikirim.</summary>
     private static async Task UsageExportAsync(
         string? from, string? to, Guid? projectId, Guid? modelId, Guid? keyId, string? status,
         HttpContext http, GatewayDbContext db, PublicIdResolver ids, UsageReports reports, CancellationToken ct)
     {
         var filter = await BuildUsageFilterAsync(from, to, projectId, modelId, keyId, status, ids, ct);
+        UsageReports.EnsureExportSize(await reports.CountAsync(filter, ct));
         http.Response.ContentType = "text/csv; charset=utf-8";
         http.Response.Headers["Content-Disposition"] = "attachment; filename=\"usage.csv\"";
         await using var writer = new StreamWriter(http.Response.Body, new UTF8Encoding(false), leaveOpen: true);
@@ -443,8 +439,8 @@ public static class AdminResourceEndpoints
             if (!TryTime(to, out var t)) throw GatewayException.BadRequest("invalid_range", "to bukan waktu ISO yang valid.");
             q = q.Where(a => a.CreatedAt < t);
         }
-        var size = Math.Clamp(pageSize ?? 50, 1, 200);
-        var number = Math.Max(page ?? 1, 1);
+        var size = Math.Clamp(pageSize ?? 50, 1, UsageReports.MaxPageSize);
+        var number = Math.Clamp(page ?? 1, 1, UsageReports.MaxPageNumber); // batas atas: offset tidak boleh overflow int
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(a => a.Id).Skip((number - 1) * size).Take(size)
             .Select(a => new AuditItem(a.Id, a.UserId, a.Action, a.Entity, a.EntityId, a.DetailJson, a.Ip, a.CreatedAt))

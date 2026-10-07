@@ -50,17 +50,21 @@ public static class DataPlaneEndpoints
     }
 
     private static async Task<IResult> ListModels(
-        HttpContext http, ApiKeyAuthenticator auth, UsageRecorder recorder, GatewayDbContext db, CancellationToken ct)
+        HttpContext http, ApiKeyAuthenticator auth, UsageRecorder recorder, GatewayDbContext db,
+        PolicyEngine policy, CancellationToken ct)
     {
         var (caller, failure) = await AuthenticateAsync(http, auth, recorder, ct);
         if (caller is null) return failure!;
 
+        // Daftar model kebijakan berlaku di sini juga: yang ditawarkan harus sama dengan yang boleh dipanggil.
+        var policies = await policy.ActivePoliciesAsync(caller, ct);
         var models = await db.Models.AsNoTracking().Where(m => m.Enabled).OrderBy(m => m.Alias)
             .Select(m => new { m.Alias, m.CreatedAt }).ToListAsync(ct);
+        var allowed = models.Where(m => PolicyEngine.DeniedModelScope(policies, m.Alias) is null).ToList();
         var body = JsonSerializer.Serialize(new
         {
             @object = "list",
-            data = models.Select(m => new
+            data = allowed.Select(m => new
             {
                 id = m.Alias,
                 @object = "model",
@@ -97,7 +101,28 @@ public static class DataPlaneEndpoints
 
     private static IResult Write(HttpContext http, GatewayResponse response)
     {
+        if (response.StreamBody is { } stream) return new SseResult(stream);
         if (response.RetryAfter is not null) http.Response.Headers.RetryAfter = response.RetryAfter;
         return Results.Text(response.Body, "application/json", Encoding.UTF8, response.Status);
+    }
+
+    /// <summary>
+    /// Respons SSE: header dikirim begitu event pertama upstream sudah siap, lalu body dipompa sampai selesai.
+    /// <c>X-Accel-Buffering: no</c> menyuruh nginx tidak menahan chunk. Body selalu dijalankan, juga bila klien sudah
+    /// pergi sebelum header terkirim: di dalamnya stream upstream dibuang, pemakaian dicatat, dan slot dilepas.
+    /// </summary>
+    private sealed class SseResult(Func<Stream, CancellationToken, Task> body) : IResult
+    {
+        public async Task ExecuteAsync(HttpContext http)
+        {
+            var response = http.Response;
+            response.StatusCode = StatusCodes.Status200OK;
+            response.ContentType = "text/event-stream; charset=utf-8";
+            response.Headers.CacheControl = "no-cache";
+            response.Headers["X-Accel-Buffering"] = "no";
+            try { await response.StartAsync(http.RequestAborted); }
+            catch (OperationCanceledException) { /* klien pergi: body di bawah mencatatnya sebagai 499 */ }
+            await body(response.Body, http.RequestAborted);
+        }
     }
 }

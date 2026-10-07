@@ -8,11 +8,6 @@ public interface ITenantOwned
     long TenantId { get; set; }
 }
 
-public interface ISoftDeletable
-{
-    DateTime? DeletedAt { get; set; }
-}
-
 public class Plan
 {
     public long Id { get; set; }
@@ -121,7 +116,7 @@ public class CatalogModel
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
-public class Provider : ITenantOwned, ISoftDeletable
+public class Provider : ITenantOwned
 {
     public long Id { get; set; }
     public Guid PublicId { get; set; } = Guid.NewGuid();
@@ -153,7 +148,7 @@ public class ProviderCredential : ITenantOwned
     public DateTime? DisabledAt { get; set; }
 }
 
-public class Model : ITenantOwned, ISoftDeletable
+public class Model : ITenantOwned
 {
     public long Id { get; set; }
     public Guid PublicId { get; set; } = Guid.NewGuid();
@@ -194,7 +189,7 @@ public class ModelPrice : ITenantOwned
     public DateTime EffectiveFrom { get; set; } = DateTime.UtcNow;
 }
 
-public class Project : ITenantOwned, ISoftDeletable
+public class Project : ITenantOwned
 {
     public long Id { get; set; }
     public Guid PublicId { get; set; } = Guid.NewGuid();

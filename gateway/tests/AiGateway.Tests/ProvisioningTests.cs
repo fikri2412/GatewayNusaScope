@@ -4,8 +4,10 @@ using AiGateway.Core.Catalog;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
+using AiGateway.Core.Options;
 using AiGateway.Core.Provisioning;
 using AiGateway.Core.Proxy;
+using AiGateway.Core.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -213,5 +215,98 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
 
         Upstream.Respond = _ => FakeUpstream.Json(200, "[1,2");
         Assert.Equal("catalog_sync_failed", (await CodeOf(() => sync.SyncAsync("k", "https://catalog.test/c", default))).Code);
+    }
+
+    [Fact]
+    public async Task Oversized_upstream_bodies_are_rejected_before_they_are_parsed_or_stored()
+    {
+        var tenantId = await NewTenantIdAsync();
+        var limit = Microsoft.Extensions.Options.Options.Create(new ProxyOptions { MaxResponseBytes = 512 });
+
+        await WithServicesAsync(tenantId, async (sp, db) =>
+        {
+            var pad = new string('x', 4096);
+            var provider = await sp.GetRequiredService<ProvisioningService>()
+                .CreateCustomProviderAsync("big", "https://big.test/v1", "key-for-big-000001", null, null, "models", default);
+
+            var discovery = new ProvisioningService(db, sp.GetRequiredService<ProviderKeyProtector>(),
+                sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<OutboundSecurityPolicy>(), limit);
+            var oversizedModels = $$"""{"data":["a"],"pad":"{{pad}}"}""";
+            Upstream.Respond = _ => FakeUpstream.Json(200, oversizedModels);
+            Assert.Equal("discovery_failed", (await CodeOf(() => discovery.DiscoverModelsAsync(provider.Id, default))).Code);
+
+            var sync = new OpenCodeCatalogSync(db, sp.GetRequiredService<IHttpClientFactory>(),
+                sp.GetRequiredService<OutboundSecurityPolicy>(), limit);
+            // Katalog ini valid: tanpa batas ukuran, provider "oversized" akan ikut tersimpan.
+            var oversizedCatalog = """
+                {"providers":{"oversized":{"settings":{"baseURL":"https://big.test/v1"},
+                "models":{"m1":{"package":"aisdk:@ai-sdk/openai-compatible","cost":[{"input":1,"output":1}]}}}},"pad":"PAD"}
+                """.Replace("PAD", pad);
+            Upstream.Respond = _ => FakeUpstream.Json(200, oversizedCatalog);
+            Assert.Equal("catalog_sync_failed", (await CodeOf(() => sync.SyncAsync("oc_sk_oversize", "https://catalog.test/c", default))).Code);
+
+            await using var check = Db.NewContext();
+            Assert.False(await check.ProviderTemplates.AnyAsync(t => t.Code == "oversized"));
+            return 0;
+        });
+    }
+
+    [Fact]
+    public async Task An_unreadable_provider_credential_is_reported_as_a_gateway_error()
+    {
+        var tenantId = await NewTenantIdAsync();
+        await WithTenantAsync(tenantId, async (prov, db) =>
+        {
+            var provider = await prov.CreateCustomProviderAsync("broken", "https://broken.test/v1", "key-for-broken-0001", null, null, "models", default);
+            var credential = await db.ProviderCredentials.SingleAsync(c => c.ProviderId == provider.Id);
+            credential.ApiKeyEncrypted = "CFDJ8-ciphertext-yang-tidak-bisa-didekripsi";
+            await db.SaveChangesAsync();
+            Upstream.Respond = _ => FakeUpstream.Json(200, """{"data":["a"]}""");
+
+            var ex = await CodeOf(() => prov.DiscoverModelsAsync(provider.Id, default));
+
+            Assert.Equal((502, "provider_credential_unreadable"), (ex.Status, ex.Code));
+            Assert.Empty(Upstream.Requests); // key tidak pernah dikirim ke upstream
+            return 0;
+        });
+    }
+
+    [Fact]
+    public async Task Key_expiry_from_the_client_is_stored_as_utc()
+    {
+        var tenantId = await NewTenantIdAsync();
+        await WithTenantAsync(tenantId, async (prov, _) =>
+        {
+            var naive = new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Unspecified);
+            var project = await prov.CreateProjectAsync("p", default);
+            var created = await prov.CreateApiKeyAsync(project.Id, "k", naive, null, null, default);
+            Assert.Equal((DateTimeKind.Utc, naive.Ticks), (created.Entity.ExpiresAt!.Value.Kind, created.Entity.ExpiresAt.Value.Ticks));
+
+            var updated = await prov.UpdateApiKeyAsync(created.Entity.Id, new ApiKeyPatch(ExpiresAt: naive.AddDays(1)), default);
+            Assert.Equal((DateTimeKind.Utc, naive.AddDays(1).Ticks), (updated.ExpiresAt!.Value.Kind, updated.ExpiresAt.Value.Ticks));
+
+            // Waktu lokal server tetap dikonversi ke instant yang sama.
+            var local = new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Local);
+            Assert.Equal(new DateTimeOffset(local).UtcDateTime, ProvisioningService.ToUtc(local));
+            return 0;
+        });
+    }
+
+    [Fact]
+    public void Config_parser_skips_providers_that_cannot_be_stored_or_used()
+    {
+        const string model = """{"package":"aisdk:@ai-sdk/openai-compatible","cost":[{"input":1,"output":1}]}""";
+        var root = System.Text.Json.Nodes.JsonNode.Parse("""
+            {"providers":{
+              "good-provider":{"settings":{"baseURL":"https://good.test/v1"},"models":{"m":MODEL}},
+              "Bad Key":{"settings":{"baseURL":"https://bad.test/v1"},"models":{"m":MODEL}},
+              "LONGKEY":{"settings":{"baseURL":"https://long.test/v1"},"models":{"m":MODEL}},
+              "insecure":{"settings":{"baseURL":"http://plain.test/v1"},"models":{"m":MODEL}},
+              "no-models-path":{"settings":{},"models":{"m":MODEL}}}}
+            """.Replace("MODEL", model).Replace("LONGKEY", new string('k', 51)))!;
+
+        var provider = Assert.Single(OpenCodeCatalogSync.Parse(root));
+
+        Assert.Equal("good-provider", provider.Key);
     }
 }

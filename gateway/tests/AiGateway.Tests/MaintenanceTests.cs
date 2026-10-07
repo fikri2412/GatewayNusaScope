@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
@@ -218,6 +221,7 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
     [Fact]
     public async Task Webhook_delivery_signs_payload_retries_with_backoff_and_fails_permanently_on_4xx()
     {
+        await ParkPendingDeliveriesAsync(); // RunAsync memproses semua pengiriman jatuh tempo; sisa test lain tidak boleh ikut terhitung
         var s = await SetupAsync();
         const string secret = "signing-secret-1234567890";
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -255,11 +259,19 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
         // Percobaan 1: penerima menjawab 500 -> dicoba lagi dengan tanda tangan yang benar.
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
         var service = DeliveryService(s.TenantId, handler, maxAttempts: 5);
+        var before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var first = await service.RunAsync(default);
+        var after = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Assert.Equal((0, 1, 0), (first.Sent, first.Retried, first.Failed));
 
-        var payload = Assert.Single(handler.Requests).Body!;
-        Assert.Equal("sha256=" + WebhookDeliveryService.Signature(secret, payload), Assert.Single(handler.Requests).Signature);
+        var sent = Assert.Single(handler.Requests);
+        var payload = sent.Body!;
+        var timestamp = long.Parse(Assert.IsType<string>(sent.Timestamp));
+        Assert.InRange(timestamp, before, after);
+        // Diharapkan dihitung lokal dari byte mentah "{timestamp}.{payload}", bukan lewat helper produksi.
+        var expected = "sha256=" + Convert.ToHexStringLower(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes($"{timestamp}.{payload}")));
+        Assert.Equal(expected, sent.Signature);
         Assert.DoesNotContain("rahasia", payload);
         Assert.DoesNotContain("input_tokens", payload);
 
@@ -351,11 +363,18 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
     [Fact]
     public async Task Maintenance_worker_records_every_job_in_job_runs()
     {
+        // Antrean pending milik test lain dijauhkan supaya pekerja tidak memanggil endpoint sungguhan.
+        await ParkPendingDeliveriesAsync();
+        long maxRunId;
+        await using (var pre = Db.NewContext())
+            maxRunId = await pre.Set<JobRun>().MaxAsync(r => (long?)r.Id) ?? 0;
+
         var maintenance = Factory.Services.GetRequiredService<MaintenanceWorker>();
         await maintenance.RunOnceAsync(default);
 
+        // Hanya baris milik eksekusi ini yang diperiksa.
         await using var ctx = Db.NewContext();
-        var runs = await ctx.Set<JobRun>().AsNoTracking().OrderBy(r => r.Id).ToListAsync();
+        var runs = await ctx.Set<JobRun>().AsNoTracking().Where(r => r.Id > maxRunId).OrderBy(r => r.Id).ToListAsync();
         Assert.Equal(
             new[] { "maintenance.retention", "maintenance.alerts", "maintenance.webhook_delivery" },
             runs.Select(r => r.JobName));
@@ -365,6 +384,276 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
             Assert.NotNull(r.FinishedAt);
             Assert.NotNull(r.Detail);
         });
+    }
+
+    [Fact]
+    public async Task Platform_scope_container_resolves_and_runs_every_worker_service()
+    {
+        await ParkPendingDeliveriesAsync();
+        var s = await SetupAsync();
+
+        // Antrean jatuh tempo dengan host yang diblokir anti-SSRF: membuktikan klien webhook kontainer platform
+        // benar-benar terpasang (bukan sekadar resolusi DI) tanpa keluar ke jaringan.
+        long deliveryId;
+        await using (var seed = Db.NewContext(s.TenantId))
+        {
+            var webhook = new Webhook
+            {
+                TenantId = s.TenantId, Name = "platform-scope", Url = "https://127.0.0.1/x",
+                SigningSecretEncrypted = Protector().Protect(s.TenantId, "rahasia-platform-1234"), SecretHint = "1234",
+            };
+            seed.Set<Webhook>().Add(webhook);
+            await seed.SaveChangesAsync(default);
+            var delivery = new WebhookDelivery
+            {
+                TenantId = s.TenantId, WebhookId = webhook.Id, Status = DeliveryStatuses.Pending,
+                NextAttemptAt = DateTime.UtcNow.AddSeconds(-1), PayloadJson = "{}",
+            };
+            seed.Set<WebhookDelivery>().Add(delivery);
+            await seed.SaveChangesAsync(default);
+            deliveryId = delivery.Id;
+        }
+
+        using var factory = new MaintenanceScopeFactory(Factory.Services, Db.ConnectionString);
+        await using var scope = factory.CreateAsyncScope();
+        var sp = scope.ServiceProvider;
+        using (var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient(WebhookDeliveryService.HttpClientName))
+            Assert.NotNull(PrimaryHandler(client).ConnectCallback);
+
+        Assert.NotNull(sp.GetRequiredService<JobRunRecorder>());
+        await sp.GetRequiredService<RetentionService>().RunAsync(default);
+        var outcome = await sp.GetRequiredService<WebhookDeliveryService>().RunAsync(default);
+        Assert.Equal((0, 1, 0), (outcome.Sent, outcome.Retried, outcome.Failed));
+        await sp.GetRequiredService<AlertService>().EvaluateAllAsync(default);
+
+        await using var check = Db.NewContext();
+        var row = await check.Set<WebhookDelivery>().IgnoreQueryFilters().AsNoTracking().SingleAsync(d => d.Id == deliveryId);
+        Assert.Equal((DeliveryStatuses.Pending, 1), (row.Status, row.Attempts));
+    }
+
+    [Fact]
+    public async Task Alert_event_and_webhook_delivery_stay_together_when_the_second_save_fails()
+    {
+        var s = await SetupAsync();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        using var admin = await LoginAsync(s.TenantId, Roles.Admin);
+        var created = await admin.PostAsJsonAsync("/admin/api/webhooks",
+            new { name = "m2", url = "https://hooks.test/m2", signingSecret = "rahasia-m2-1234567890" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var webhookId = (Guid?)(await BodyAsync(created))["id"] ?? throw new InvalidOperationException("id webhook hilang.");
+
+        await WithTenantAsync(s.TenantId, async (prov, ctx) =>
+        {
+            await prov.SetPolicyAsync(PolicyScopes.Tenant, s.TenantId, new PolicySpec(MonthlyBudget: 5m), default);
+            ctx.Set<AlertRule>().Add(new AlertRule
+            {
+                Name = "budget-m2", Metric = AlertMetrics.MonthlyBudget, ScopeId = s.TenantId, ThresholdPercent = 80,
+                WebhookId = await ctx.Set<Webhook>().Where(w => w.PublicId == webhookId).Select(w => w.Id).SingleAsync(),
+            });
+            ctx.UsageDailies.Add(new UsageDaily
+            {
+                TenantId = s.TenantId, ProjectId = s.ProjectId, ApiKeyId = s.KeyId, ModelId = s.ModelId,
+                Day = today, Requests = 1, Cost = 5m,
+            });
+            await ctx.SaveChangesAsync(default);
+            return 0;
+        });
+
+        // Simulasi crash tepat setelah kejadian tertulis (SaveChanges kedua saat mengantre webhook).
+        var session = new TenantSessionInterceptor { TenantId = s.TenantId };
+        var dbOptions = new DbContextOptionsBuilder<GatewayDbContext>();
+        dbOptions.UseGatewaySqlServer(Db.ConnectionString).AddInterceptors(session);
+        await using (var failing = new FailingContext(dbOptions.Options, session) { CurrentTenantId = s.TenantId, FailAfterSaves = 1 })
+        {
+            var alerts = new AlertService(failing, TimeProvider.System, NullLogger<AlertService>.Instance);
+            Assert.Equal(0, await alerts.EvaluateTenantAsync(s.TenantId, default));
+        }
+
+        // Rollback: tidak ada kejadian yatim tanpa antrean, jadi evaluasi berikutnya masih bisa menyimpan keduanya.
+        await using (var check = Db.NewContext(s.TenantId))
+        {
+            Assert.False(await check.Set<AlertEvent>().AnyAsync());
+            Assert.False(await check.Set<WebhookDelivery>().AnyAsync());
+        }
+
+        Assert.Equal(1, await EvaluateAsync(s.TenantId));
+        Assert.Equal(0, await EvaluateAsync(s.TenantId));
+        await using (var check = Db.NewContext(s.TenantId))
+        {
+            var ev = await check.Set<AlertEvent>().AsNoTracking().SingleAsync();
+            var delivery = await check.Set<WebhookDelivery>().AsNoTracking().SingleAsync();
+            Assert.Equal(ev.Id, delivery.AlertEventId);
+            Assert.Equal(DeliveryStatuses.Pending, delivery.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Job_run_closes_without_failure_when_the_host_shuts_down_mid_job()
+    {
+        await using var ctx = Db.NewContext();
+        var recorder = new JobRunRecorder(ctx, TimeProvider.System, NullLogger<JobRunRecorder>.Instance);
+        using var cts = new CancellationTokenSource();
+
+        await recorder.RunAsync("maintenance.shutdown.test", () =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        }, cts.Token);
+
+        await using var check = Db.NewContext();
+        var run = await check.Set<JobRun>().AsNoTracking().SingleAsync(r => r.JobName == "maintenance.shutdown.test");
+        Assert.Equal(JobRunStatuses.Running, run.Status);
+        Assert.NotNull(run.FinishedAt);
+        Assert.Equal("dibatalkan: penghentian host", run.Detail);
+    }
+
+    [Fact]
+    public async Task Retention_purges_tokens_expired_more_than_a_week_ago()
+    {
+        var s = await SetupAsync();
+        var (_, userId, _) = await NewUserAsync(Roles.Owner, s.TenantId);
+
+        await WithServicesAsync(s.TenantId, async (_, ctx) =>
+        {
+            ctx.RefreshTokens.AddRange(
+                new RefreshToken { UserId = userId, TokenHash = "kedaluwarsa-refresh", ExpiresAt = DateTime.UtcNow.AddDays(-8) },
+                new RefreshToken { UserId = userId, TokenHash = "masih-valid-refresh", ExpiresAt = DateTime.UtcNow.AddDays(7) });
+            ctx.UserTokens.AddRange(
+                new UserToken { UserId = userId, Purpose = TokenPurposes.Invite, TokenHash = "kedaluwarsa-invite", ExpiresAt = DateTime.UtcNow.AddDays(-8) },
+                new UserToken { UserId = userId, Purpose = TokenPurposes.Invite, TokenHash = "masih-valid-invite", ExpiresAt = DateTime.UtcNow.AddDays(7) });
+            await ctx.SaveChangesAsync(default);
+            return 0;
+        });
+
+        var outcome = await RunRetentionAsync(s.TenantId);
+        Assert.Equal((1, 1), (outcome.RefreshTokensDeleted, outcome.UserTokensDeleted));
+
+        await using var check = Db.NewContext();
+        Assert.False(await check.RefreshTokens.AnyAsync(t => t.TokenHash == "kedaluwarsa-refresh"));
+        Assert.False(await check.UserTokens.AnyAsync(t => t.TokenHash == "kedaluwarsa-invite"));
+        Assert.True(await check.RefreshTokens.AnyAsync(t => t.TokenHash == "masih-valid-refresh"));
+        Assert.True(await check.UserTokens.AnyAsync(t => t.TokenHash == "masih-valid-invite"));
+    }
+
+    [Fact]
+    public async Task Retention_reconcile_is_idempotent_on_a_second_run()
+    {
+        var s = await SetupAsync();
+        var oldDay = DateTime.UtcNow.Date.AddDays(-30);
+        var day = DateOnly.FromDateTime(oldDay);
+
+        await WithServicesAsync(s.TenantId, async (sp, ctx) =>
+        {
+            await sp.GetRequiredService<UsageRecorder>().RecordAsync(NewLog(s, oldDay.AddHours(1), 100, 50, UsageStatuses.Ok));
+            // Rusak agregat supaya rekonsiliasi pertama terlihat.
+            await ctx.UsageDailies.Where(u => u.Day == day && u.ProjectId == s.ProjectId)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.InputTokens, 1L).SetProperty(x => x.Requests, 99L), default);
+            return 0;
+        });
+
+        var first = await RunRetentionAsync(s.TenantId);
+        Assert.Equal((1, 1), (first.DaysReconciled, first.LogsDeleted));
+
+        (long, long, long, long, long, decimal) snapshot;
+        await using (var ctx = Db.NewContext(s.TenantId))
+        {
+            var row = await ctx.UsageDailies.AsNoTracking()
+                .SingleAsync(u => u.Day == day && u.ProjectId == s.ProjectId && u.ApiKeyId == s.KeyId);
+            Assert.Equal((1L, 0L, 100L, 50L), (row.Requests, row.Denied, row.InputTokens, row.OutputTokens));
+            snapshot = (row.Requests, row.Denied, row.Errors, row.InputTokens, row.OutputTokens, row.Cost);
+        }
+
+        var second = await RunRetentionAsync(s.TenantId);
+        Assert.Equal((0, 0), (second.DaysReconciled, second.LogsDeleted));
+
+        await using (var ctx = Db.NewContext(s.TenantId))
+        {
+            var row = await ctx.UsageDailies.AsNoTracking()
+                .SingleAsync(u => u.Day == day && u.ProjectId == s.ProjectId && u.ApiKeyId == s.KeyId);
+            Assert.Equal(snapshot, (row.Requests, row.Denied, row.Errors, row.InputTokens, row.OutputTokens, row.Cost));
+        }
+    }
+
+    [Fact]
+    public async Task Alert_events_and_webhook_deliveries_endpoints_are_tenant_scoped()
+    {
+        var a = await SetupAsync();
+        var b = await SetupAsync();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        using var adminA = await LoginAsync(a.TenantId, Roles.Admin);
+        var created = await adminA.PostAsJsonAsync("/admin/api/webhooks",
+            new { name = "ops-t3", url = "https://hooks.test/t3", signingSecret = "rahasia-t3-1234567890" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var webhookId = (Guid?)(await BodyAsync(created))["id"] ?? throw new InvalidOperationException("id webhook hilang.");
+
+        var ruleResponse = await adminA.PostAsJsonAsync("/admin/api/alerts",
+            new { name = "budget-t3", metric = "monthly_budget", scope = "tenant", thresholdPercent = 80, webhookId });
+        Assert.Equal(HttpStatusCode.Created, ruleResponse.StatusCode);
+        var ruleId = (Guid?)(await BodyAsync(ruleResponse))["id"] ?? throw new InvalidOperationException("id aturan hilang.");
+
+        await WithTenantAsync(a.TenantId, async (prov, ctx) =>
+        {
+            await prov.SetPolicyAsync(PolicyScopes.Tenant, a.TenantId, new PolicySpec(MonthlyBudget: 5m), default);
+            ctx.UsageDailies.Add(new UsageDaily
+            {
+                TenantId = a.TenantId, ProjectId = a.ProjectId, ApiKeyId = a.KeyId, ModelId = a.ModelId,
+                Day = today, Requests = 1, Cost = 5m,
+            });
+            await ctx.SaveChangesAsync(default);
+            return 0;
+        });
+        await EvaluateAsync(a.TenantId);
+
+        // A melihat kejadian dan pengirimannya sendiri, lengkap dengan field yang dipakai UI.
+        var events = (JsonArray)(await BodyAsync(await adminA.GetAsync("/admin/api/alerts/events")))!;
+        var alert = Assert.Single(events)!;
+        Assert.Equal(ruleId, (Guid?)alert["ruleId"]);
+        Assert.Equal("budget-t3", (string?)alert["ruleName"]);
+        Assert.Equal("monthly_budget", (string?)alert["metric"]);
+        Assert.Equal("tenant", (string?)alert["scope"]);
+        Assert.Equal(80, (int?)alert["thresholdPercent"]);
+        Assert.Equal(new DateOnly(today.Year, today.Month, 1).ToString("O"), (string?)alert["periodStart"]); // anggaran bulanan: periode mulai tanggal 1
+        Assert.Equal(5m, (decimal?)alert["observed"]);
+        Assert.Equal(5m, (decimal?)alert["limit"]);
+
+        var deliveries = (JsonArray)(await BodyAsync(await adminA.GetAsync($"/admin/api/webhooks/{webhookId}/deliveries")))!;
+        var delivery = Assert.Single(deliveries)!;
+        Assert.Equal("pending", (string?)delivery["status"]);
+        Assert.Equal(0, (int?)delivery["attempts"]);
+
+        // Tenant B tidak melihat kejadian A dan mendapat 404 yang sama dengan webhook yang tidak ada.
+        using var adminB = await LoginAsync(b.TenantId, Roles.Admin);
+        Assert.Empty((JsonArray)(await BodyAsync(await adminB.GetAsync("/admin/api/alerts/events")))!);
+        Assert.Equal(HttpStatusCode.NotFound, (await adminB.GetAsync($"/admin/api/webhooks/{webhookId}/deliveries")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Webhook_creation_rejects_unsafe_urls_and_short_secrets_and_uses_the_anti_ssrf_handler()
+    {
+        var s = await SetupAsync();
+        using var admin = await LoginAsync(s.TenantId, Roles.Admin);
+
+        foreach (var url in new[] { "http://hooks.test/x", "https://127.0.0.1/x" })
+        {
+            var response = await admin.PostAsJsonAsync("/admin/api/webhooks",
+                new { name = $"bad-{Guid.NewGuid():N}", url, signingSecret = "cukup-panjang-1234" });
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("invalid_webhook_url", ErrorCode(await BodyAsync(response)));
+        }
+
+        var shortSecret = await admin.PostAsJsonAsync("/admin/api/webhooks",
+            new { name = "secret-pendek", url = "https://hooks.test/x", signingSecret = "12345" });
+        Assert.Equal(HttpStatusCode.BadRequest, shortSecret.StatusCode);
+        Assert.Equal("invalid_signing_secret", ErrorCode(await BodyAsync(shortSecret)));
+
+        // Klien bernama "webhook" dari DI memakai handler anti-SSRF yang sama dengan upstream.
+        using var client = Factory.Services.GetRequiredService<IHttpClientFactory>().CreateClient(WebhookDeliveryService.HttpClientName);
+        var handler = PrimaryHandler(client);
+        Assert.NotNull(handler.ConnectCallback);
+        Assert.False(handler.AllowAutoRedirect);
+        Assert.False(handler.UseProxy);
     }
 
     // --- helpers ------------------------------------------------------------------------------
@@ -424,9 +713,49 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
             TimeProvider.System, NullLogger<WebhookDeliveryService>.Instance);
     }
 
+    private WebhookSecretProtector Protector() =>
+        new(Factory.Services.GetRequiredService<IDataProtectionProvider>());
+
+    /// <summary>Jauhkan pengiriman pending milik test lain supaya pekerja tidak memanggil endpoint sungguhan.</summary>
+    private async Task ParkPendingDeliveriesAsync()
+    {
+        await using var ctx = Db.NewContext();
+        await ctx.Set<WebhookDelivery>().IgnoreQueryFilters()
+            .Where(d => d.Status == DeliveryStatuses.Pending)
+            .ExecuteUpdateAsync(s => s.SetProperty(d => d.NextAttemptAt, DateTime.UtcNow.AddYears(1)), default);
+    }
+
+    /// <summary>Handler primer klien buatan IHttpClientFactory; rantai handler-nya privat, jadi dibaca lewat refleksi.</summary>
+    private static SocketsHttpHandler PrimaryHandler(HttpClient client)
+    {
+        // Cari field bertipe HttpMessageHandler (nama internalnya bisa berubah antar versi .NET).
+        var field = typeof(HttpMessageInvoker).GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single(f => typeof(HttpMessageHandler).IsAssignableFrom(f.FieldType));
+        var handler = (HttpMessageHandler)field.GetValue(client)!;
+        while (handler is DelegatingHandler delegating) handler = delegating.InnerHandler!;
+        return Assert.IsType<SocketsHttpHandler>(handler);
+    }
+
+    private Task<RetentionOutcome> RunRetentionAsync(long tenantId) =>
+        WithServicesAsync(tenantId, (_, ctx) =>
+            new RetentionService(ctx, Options.Create(Retention()), TimeProvider.System, NullLogger<RetentionService>.Instance).RunAsync(default));
+
+    /// <summary>Konteks uji yang gagal pada SaveChanges ke-<c>FailAfterSaves + 1</c> (simulasi crash di tengah unit kerja).</summary>
+    private sealed class FailingContext(DbContextOptions<GatewayDbContext> options, TenantSessionInterceptor session)
+        : GatewayDbContext(options, session)
+    {
+        public int FailAfterSaves { get; init; } = int.MaxValue;
+        private int _saves;
+
+        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default) =>
+            ++_saves > FailAfterSaves
+                ? throw new InvalidOperationException("simulasi gagal simpan")
+                : base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
-        public record Captured(string? Signature, string? Body);
+        public record Captured(string? Signature, string? Timestamp, string? Body);
 
         public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; } = respond;
         public List<Captured> Requests { get; } = [];
@@ -434,8 +763,9 @@ public class MaintenanceTests(TestDb db) : GatewayTestBase(db)
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var signature = request.Headers.TryGetValues("X-Gateway-Signature", out var values) ? values.First() : null;
+            var timestamp = request.Headers.TryGetValues("X-Gateway-Timestamp", out var stamps) ? stamps.First() : null;
             var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
-            Requests.Add(new Captured(signature, body));
+            Requests.Add(new Captured(signature, timestamp, body));
             return Respond(request);
         }
     }

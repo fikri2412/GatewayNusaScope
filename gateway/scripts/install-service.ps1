@@ -57,13 +57,24 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 
 # Environment=Development dimatikan; produksi memakai appsettings.Production.json + variabel lingkungan.
 sc.exe create $ServiceName binPath= "`"$exe`"" start= auto DisplayName= "AI Gateway" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "sc.exe create gagal (exit $LASTEXITCODE)." }
 sc.exe description $ServiceName "AI Gateway (multi-tenant AI gateway)" | Out-Null
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
 
 # URL dan environment untuk service (secret menyusul lewat registry/Environment atau appsettings.Production.json).
-$env:SERVICE_NAME = $ServiceName
-$env:PORT = "$Port"
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\$ServiceName" /v Environment /t REG_MULTI_SZ /d "ASPNETCORE_URLS=http://localhost:$Port`0ASPNETCORE_ENVIRONMENT=Production" /f | Out-Null
+# Entri Environment yang sudah ada (mis. secret) DIPERTAHANKAN; hanya ASPNETCORE_URLS/ASPNETCORE_ENVIRONMENT yang diganti.
+$serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+$environment = @()
+$existing = (Get-ItemProperty -Path $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment
+if ($existing) {
+    $environment = @($existing | Where-Object { $_ -notmatch '^(ASPNETCORE_URLS|ASPNETCORE_ENVIRONMENT)=' })
+}
+$environment += @("ASPNETCORE_URLS=http://localhost:$Port", 'ASPNETCORE_ENVIRONMENT=Production')
+New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
+$written = (Get-ItemProperty -Path $serviceKey -Name Environment -ErrorAction Stop).Environment
+if ($written -notcontains "ASPNETCORE_URLS=http://localhost:$Port") {
+    throw "Gagal menulis ASPNETCORE_URLS untuk service $ServiceName."
+}
 
 Start-Service -Name $ServiceName
 Start-Sleep -Seconds 3

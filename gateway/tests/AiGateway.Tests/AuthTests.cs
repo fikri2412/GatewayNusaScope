@@ -1,8 +1,11 @@
+using System.Net;
+using System.Net.Http.Json;
 using AiGateway.Core.Auth;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
 using AiGateway.Core.Options;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -18,6 +21,28 @@ public class AuthTests(TestDb db) : GatewayTestBase(db)
         WithServicesAsync<T>(null, (sp, ctx) => action(sp.GetRequiredService<AuthService>(), ctx));
 
     private static async Task<string> CodeOf(Func<Task> action) => (await Assert.ThrowsAsync<GatewayException>(action)).Code;
+
+    /// <summary>Jam manual untuk test yang membutuhkan waktu beku atau dimajukan.</summary>
+    private sealed class ManualClock(DateTimeOffset start) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = start;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private async Task<string> LoginAsync(string email, string password = StrongPassword)
+    {
+        var response = await Client.PostAsJsonAsync("/admin/api/auth/login", new { email, password });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (string)(await BodyAsync(response))["accessToken"]!;
+    }
+
+    private async Task<HttpResponseMessage> SendAsAsync(HttpMethod method, string path, string token, object? body = null)
+    {
+        using var request = new HttpRequestMessage(method, path);
+        request.Headers.Authorization = new("Bearer", token);
+        if (body is not null) request.Content = JsonContent.Create(body);
+        return await Client.SendAsync(request);
+    }
 
     [Fact]
     public async Task Login_issues_a_refresh_token_that_is_stored_only_as_a_hash()
@@ -83,8 +108,12 @@ public class AuthTests(TestDb db) : GatewayTestBase(db)
         var second = await WithAuthAsync((a, _) => a.RefreshAsync(first.RefreshToken, null, null, default));
         Assert.NotEqual(first.RefreshToken, second.RefreshToken);
 
+        // Pemakaian ulang di luar jendela tenggang (10 detik) dianggap pencurian: token baru ikut mati.
+        await using var ctx = Db.NewContext();
+        await ctx.RefreshTokens.Where(t => t.TokenHash == AuthService.HashToken(first.RefreshToken))
+            .ExecuteUpdateAsync(t => t.SetProperty(x => x.RevokedAt, DateTime.UtcNow.AddMinutes(-1)));
+
         Assert.Equal("invalid_refresh_token", await CodeOf(() => WithAuthAsync((a, _) => a.RefreshAsync(first.RefreshToken, null, null, default))));
-        // pemakaian ulang token lama dianggap pencurian: token baru ikut mati
         Assert.Equal("invalid_refresh_token", await CodeOf(() => WithAuthAsync((a, _) => a.RefreshAsync(second.RefreshToken, null, null, default))));
     }
 
@@ -199,5 +228,150 @@ public class AuthTests(TestDb db) : GatewayTestBase(db)
             auth.ValidatePassword(StrongPassword, "a@example.test");
             return Task.FromResult(0);
         });
+    }
+
+    [Fact]
+    public async Task A_locked_account_only_reveals_itself_to_the_correct_password()
+    {
+        var user = await NewUserAsync();
+        var lockedUntil = DateTime.UtcNow.AddMinutes(5);
+        await using (var ctx = Db.NewContext())
+            await ctx.Users.Where(u => u.Id == user.UserId).ExecuteUpdateAsync(u => u.SetProperty(x => x.LockedUntil, lockedUntil));
+
+        var unknown = await Assert.ThrowsAsync<GatewayException>(() =>
+            WithAuthAsync((a, _) => a.LoginAsync("nobody@example.test", StrongPassword, null, null, default)));
+        var wrongWhileLocked = await Assert.ThrowsAsync<GatewayException>(() =>
+            WithAuthAsync((a, _) => a.LoginAsync(user.Email, "wrong-password-123", null, null, default)));
+        // Akun terkunci + password salah tidak boleh bisa dibedakan dari email yang tidak terdaftar.
+        Assert.Equal((unknown.Status, unknown.Code, unknown.Message), (wrongWhileLocked.Status, wrongWhileLocked.Code, wrongWhileLocked.Message));
+
+        var rightWhileLocked = await Assert.ThrowsAsync<GatewayException>(() =>
+            WithAuthAsync((a, _) => a.LoginAsync(user.Email, StrongPassword, null, null, default)));
+        Assert.Equal((429, "account_locked"), (rightWhileLocked.Status, rightWhileLocked.Code));
+
+        await using (var ctx = Db.NewContext())
+        {
+            var row = await ctx.Users.AsNoTracking().SingleAsync(u => u.Id == user.UserId);
+            Assert.Equal<DateTime?>(lockedUntil, row.LockedUntil); // percobaan selama terkunci tidak memperpanjang kunci
+            Assert.Equal(0, row.FailedLoginCount);
+        }
+    }
+
+    [Fact]
+    public async Task Access_token_is_rejected_after_the_role_changes_or_the_account_is_deactivated()
+    {
+        var (tenantId, _, ownerEmail) = await NewUserAsync(Roles.Owner);
+        var (_, memberId, memberEmail) = await NewUserAsync(Roles.Admin, tenantId);
+        var owner = await LoginAsync(ownerEmail);
+        var member = await LoginAsync(memberEmail);
+        Assert.Equal(HttpStatusCode.OK, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", member)).StatusCode);
+
+        // Peran berubah -> security stamp berputar -> access token yang sudah terbit langsung tidak berlaku.
+        Assert.Equal(HttpStatusCode.OK,
+            (await SendAsAsync(HttpMethod.Patch, $"/admin/api/users/{memberId}", owner, new { role = Roles.Viewer })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", member)).StatusCode);
+
+        var viewer = await LoginAsync(memberEmail);
+        Assert.Equal(HttpStatusCode.OK, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", viewer)).StatusCode);
+
+        // Dinonaktifkan -> token yang masih beredar ditolak walau belum kedaluwarsa.
+        Assert.Equal(HttpStatusCode.OK,
+            (await SendAsAsync(HttpMethod.Patch, $"/admin/api/users/{memberId}", owner, new { isActive = false })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", viewer)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Access_token_is_rejected_after_the_user_changes_their_own_password()
+    {
+        var (_, _, email) = await NewUserAsync();
+        var token = await LoginAsync(email);
+        Assert.Equal(HttpStatusCode.OK, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", token)).StatusCode);
+
+        var changed = await SendAsAsync(HttpMethod.Post, "/admin/api/auth/change-password", token,
+            new { currentPassword = StrongPassword, newPassword = "another-strong-pass-9" });
+        Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", token)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await SendAsAsync(HttpMethod.Get, "/admin/api/projects", await LoginAsync(email, "another-strong-pass-9"))).StatusCode);
+    }
+
+    [Fact]
+    public async Task Reusing_a_just_rotated_refresh_token_is_not_treated_as_theft()
+    {
+        var user = await NewUserAsync();
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var ctx = Db.NewContext();
+        var auth = new AuthService(ctx, new PasswordHasher<User>(), Factory.Services.GetRequiredService<IOptions<AuthOptions>>(), clock);
+
+        var first = await auth.LoginAsync(user.Email, StrongPassword, null, null, default);
+        var second = await auth.RefreshAsync(first.RefreshToken, null, null, default);
+
+        // Pengulangan di dalam jendela tenggang (mis. respons hilang lalu klien mencoba lagi) hanya ditolak:
+        // sesi hasil rotasi tetap hidup.
+        Assert.Equal("invalid_refresh_token", await CodeOf(() => auth.RefreshAsync(first.RefreshToken, null, null, default)));
+        var third = await auth.RefreshAsync(second.RefreshToken, null, null, default);
+
+        // Setelah jendela tenggang lewat, pemakaian ulang token lama tetap dianggap pencurian: seluruh sesi mati.
+        clock.Now = clock.Now.AddSeconds(11);
+        Assert.Equal("invalid_refresh_token", await CodeOf(() => auth.RefreshAsync(first.RefreshToken, null, null, default)));
+        Assert.Equal("invalid_refresh_token", await CodeOf(() => auth.RefreshAsync(third.RefreshToken, null, null, default)));
+    }
+
+    [Fact]
+    public async Task Refreshing_with_a_deactivated_account_still_consumes_the_presented_token()
+    {
+        var user = await NewUserAsync();
+        var session = await WithAuthAsync((a, _) => a.LoginAsync(user.Email, StrongPassword, null, null, default));
+        var hash = AuthService.HashToken(session.RefreshToken);
+
+        await using var ctx = Db.NewContext();
+        await ctx.Users.Where(u => u.Id == user.UserId).ExecuteUpdateAsync(u => u.SetProperty(x => x.IsActive, false));
+
+        Assert.Equal("invalid_refresh_token", await CodeOf(() => WithAuthAsync((a, _) => a.RefreshAsync(session.RefreshToken, null, null, default))));
+        Assert.NotNull((await ctx.RefreshTokens.AsNoTracking().SingleAsync(t => t.TokenHash == hash)).RevokedAt);
+    }
+
+    [Fact]
+    public async Task Invite_and_reset_tokens_stop_working_when_the_account_is_deactivated()
+    {
+        var owner = await NewUserAsync(Roles.Owner);
+        var email = $"{Guid.NewGuid():N}@example.test";
+        var invited = await WithServicesAsync(owner.TenantId, (sp, _) =>
+            sp.GetRequiredService<UserAdminService>().InviteAsync(email, "Pending", Roles.Viewer, default));
+        await WithServicesAsync(owner.TenantId, (sp, _) =>
+            sp.GetRequiredService<UserAdminService>().UpdateAsync(invited.User.Id, null, false, owner.UserId, default));
+
+        await using var ctx = Db.NewContext();
+        var before = (await ctx.Users.AsNoTracking().SingleAsync(u => u.Id == invited.User.Id)).PasswordHash;
+
+        Assert.Equal("invalid_token", await CodeOf(() =>
+            WithAuthAsync((a, _) => a.RedeemTokenAsync(invited.InviteToken, TokenPurposes.Invite, "fresh-strong-pass-77", default))));
+
+        Assert.Equal(before, (await ctx.Users.AsNoTracking().SingleAsync(u => u.Id == invited.User.Id)).PasswordHash);
+        Assert.NotNull((await ctx.UserTokens.AsNoTracking().SingleAsync(t => t.TokenHash == AuthService.HashToken(invited.InviteToken))).UsedAt);
+    }
+
+    [Fact]
+    public async Task Password_reset_audit_rows_name_the_affected_user_and_its_tenant()
+    {
+        var (_, _, ownerEmail) = await NewUserAsync(Roles.Owner);
+        var owner = await LoginAsync(ownerEmail);
+        var email = $"{Guid.NewGuid():N}@example.test";
+        var invited = await SendAsAsync(HttpMethod.Post, "/admin/api/users/invite", owner,
+            new { email, displayName = "Reset Me", role = Roles.Viewer });
+        Assert.Equal(HttpStatusCode.OK, invited.StatusCode);
+        var invitedId = (long)(await BodyAsync(invited))["user"]!["id"]!;
+
+        var reset = await SendAsAsync(HttpMethod.Post, $"/admin/api/users/{invitedId}/reset-password", owner);
+        Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+        var resetToken = (string)(await BodyAsync(reset))["token"]!;
+        using var redeemed = await Client.PostAsJsonAsync("/admin/api/auth/reset-password", new { token = resetToken, password = StrongPassword });
+        Assert.Equal(HttpStatusCode.NoContent, redeemed.StatusCode);
+
+        // Baris audit harus menyebut akun yang direset dan tenant-nya, sehingga terlihat oleh pemilik tenant.
+        var items = (await BodyAsync(await SendAsAsync(HttpMethod.Get, "/admin/api/audit", owner)))["items"]!.AsArray();
+        var row = Assert.Single(items, i => (string?)i!["action"] == "auth.password_reset")!;
+        Assert.Equal("user", (string?)row["entity"]);
+        Assert.Equal(invitedId.ToString(), (string?)row["entityId"]);
     }
 }

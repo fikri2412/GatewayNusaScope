@@ -33,7 +33,7 @@ Istilah:
 
 Sama dengan `AGENTS.md`: .NET 9, ASP.NET Core Minimal API, EF Core 9 + Dapper, SQL Server, React + Vite + TypeScript. Tanpa Docker, Redis, atau message broker.
 
-Paket tambahan yang dibutuhkan (catat di `DECISIONS.md` saat dipakai): `Microsoft.AspNetCore.Authentication.JwtBearer` (login admin). Enkripsi key provider memakai ASP.NET Core Data Protection (sudah ada di framework).
+Paket tambahan yang dibutuhkan (catat di `DECISIONS.md` saat dipakai): `Microsoft.AspNetCore.Authentication.JwtBearer` (login admin) dan `Microsoft.Extensions.Hosting.WindowsServices` (lifetime Windows Service agar terpasang lewat `scripts/install-service.ps1`). Enkripsi key provider memakai ASP.NET Core Data Protection (sudah ada di framework).
 
 Gateway **tidak mereferensikan** `OperatorAi.Shared` dan tidak tahu soal chatbot.
 
@@ -48,7 +48,11 @@ gateway/
 │  ├─ AiGateway.Core/        # entity, DbContext, engine kebijakan, kripto, kontrak
 │  └─ AiGateway.Api/         # data plane, admin API, melayani UI statis, background jobs
 ├─ tests/AiGateway.Tests/
-└─ web/                      # UI admin (React + Vite + TS); build ke Api/wwwroot
+├─ web/                      # UI admin (React + Vite + TS); build ke Api/wwwroot
+├─ sql/                      # tenant-security.sql (RLS, G4)
+├─ scripts/                  # install-service.ps1 (Windows Service)
+├─ examples/                 # contoh integrasi curl / Python / .NET
+└─ README.md                 # panduan pasang dan operasional (G5)
 ```
 
 Database terpisah: `AiGateway` di SQL Server yang sama saat development.
@@ -60,7 +64,7 @@ Database terpisah: `AiGateway` di SQL Server yang sama saat development.
 Tiga bidang dalam satu proses:
 
 1. **Data plane** (dipanggil aplikasi pelanggan), auth API key:
-   - `POST /v1/chat/completions` format OpenAI, non-streaming dulu.
+   - `POST /v1/chat/completions` format OpenAI, respons utuh atau streaming SSE (`stream: true`).
    - `GET /v1/models` daftar model yang boleh dipakai key itu.
 2. **Control plane** (dipanggil UI admin), auth JWT: `/admin/api/...` CRUD provider, model, project, key, kebijakan, laporan.
 3. **Platform plane** (pengelola instalasi), auth JWT role `platform_admin`: `/platform/api/...` kelola tenant dan plan.
@@ -75,16 +79,23 @@ Plus `GET /healthz` tanpa auth, dan background service untuk rekap dan retensi.
    tolak 401 bila tidak ada / dicabut / kedaluwarsa; 403 bila IP tidak diizinkan
 3. Muat project dan tenant; tolak 403 bila tenant/project suspended
 4. Cari model alias milik tenant; tolak 404/403 bila tidak ada, disabled, atau tidak diizinkan kebijakan
-5. Terapkan kebijakan paling spesifik (key > project > tenant):
-   - max_tokens dipotong ke batas
+5. Terapkan semua kebijakan yang berlaku (tenant, project, key) secara terpisah —
+   project/key tidak bisa melonggarkan batas tenant:
+   - daftar model = irisan semua daftar; batas max_tokens per request = yang terkecil
    - rate limit per menit (penghitung memori); 429 + Retry-After
-   - kuota harian/bulanan dan anggaran dari usage_daily; 429 dengan alasan
+   - kuota harian/bulanan dan anggaran dihitung per scope dari usage_daily; 429 dengan alasan
 6. Dekripsi key provider, panggil upstream (timeout, tanpa redirect)
-7. Catat usage_logs + upsert usage_daily (juga untuk permintaan ditolak/gagal)
-8. Kembalikan respons upstream; error dibentuk ulang ke format error OpenAI
+7. Bila `stream: true`: teruskan SSE event demi event; fallback antar route hanya sampai event pertama terkirim,
+   kegagalan setelah itu dikirim sebagai satu event error lalu koneksi ditutup
+8. Catat usage_logs + upsert usage_daily (juga untuk permintaan ditolak/gagal); untuk stream dicatat saat stream berakhir
+9. Kembalikan respons upstream — untuk stream sudah berjalan sejak langkah 7; error dibentuk ulang ke format error OpenAI
 ```
 
-Bila upstream gagal (5xx, timeout) dan model punya `fallback_model_id`, coba model cadangan sekali.
+Bila upstream gagal (5xx, timeout), route lain untuk model yang sama dicoba menurut urutan `priority`
+(kecil dulu, target berprioritas sama dibagi menurut `weight`); jumlah percobaan dan pemakaian
+cadangan tercatat di `usage_logs.attempts`/`fallback_used`. Kesalahan permintaan (4xx) tidak dicoba
+ulang ke route lain. Untuk streaming, fallback hanya berlaku sebelum event pertama diteruskan ke klien —
+setelah itu stream berjalan di route yang sama sampai selesai atau gagal.
 
 ---
 
@@ -169,11 +180,11 @@ Alur tenant: pilih template (atau `custom`) → isi API key milik sendiri (BYOK)
 
 ### Tingkat 2 (G4)
 
-`request_bodies` (`usage_log_id`, `tenant_id`, `request_json`, `response_json`, `expires_at`; hanya bila `projects.log_content = 1`), `alert_rules`, `alert_events`, `webhooks`, `webhook_deliveries`, `provider_health` (circuit breaker), `job_runs`, `user_mfa`.
+`request_bodies` (`usage_log_id`, `tenant_id`, `request_json`, `response_json`, `expires_at`; hanya bila `projects.log_content = 1`), `alert_rules`, `alert_events`, `webhooks`, `webhook_deliveries`, `job_runs` (platform, tanpa `tenant_id`).
 
 ### Ditunda
 
-`guardrail_rules`, `response_cache`, `prompt_templates`, `invoices`.
+`provider_health` (circuit breaker), `user_mfa`, `guardrail_rules`, `response_cache`, `prompt_templates`, `invoices`.
 
 Konstanta (di `AiGateway.Core`), tanpa string literal tersebar: `Roles`, `TenantStatuses`, `ProjectStatuses`, `UsageStatuses`, `PolicyScopes`, `TokenPurposes`.
 
@@ -211,7 +222,7 @@ Konstanta (di `AiGateway.Core`), tanpa string literal tersebar: `Roles`, `Tenant
 - **Anti-SSRF** (penting karena tenant mengisi `base_url`): hanya `https`; tolak host yang me-resolve ke loopback, link-local, atau jaringan privat kecuali platform admin mengizinkan eksplisit lewat konfigurasi; tanpa redirect; resolve ulang saat dipanggil.
 - **Login admin:** kunci akun sementara setelah N gagal, rate limit endpoint login, JWT berumur pendek + refresh token, `security_stamp` membatalkan semua token.
 - **Privasi:** isi prompt dan respons tidak disimpan kecuali project menyalakan `log_content`; tersimpan dengan `expires_at` dan dihapus otomatis.
-- **Batas permintaan:** ukuran body maksimal, timeout upstream, jumlah permintaan bersamaan per tenant.
+- **Batas permintaan:** ukuran body permintaan (`Proxy:MaxRequestBytes`), ukuran body respons upstream (`Proxy:MaxResponseBytes`), waktu tunggu upstream (`Proxy:UpstreamTimeoutSeconds`; untuk stream juga jeda maksimum antar baris), durasi maksimum stream (`Proxy:MaxStreamSeconds`, default 900), dan batas permintaan bersamaan per tenant (`Proxy:MaxConcurrentPerTenant`, default 64; kelebihan ditolak `429` `concurrency_limit_exceeded`).
 - **Secret** hanya lewat `dotnet user-secrets` atau variabel lingkungan; tidak ada di file ter-commit.
 - **Audit:** setiap perubahan konfigurasi, login, pembuatan/pencabutan key tercatat di `audit_logs`.
 - Validasi semua input admin dan input klien sebagai tidak dipercaya; query selalu berparameter.
@@ -266,6 +277,9 @@ Setiap fase: kerjakan tugasnya, jalankan `dotnet build`, `dotnet test`, dan `npm
 
 **Selesai bila:** orang di luar tim bisa memasang dan menjalankannya dari dokumen. (Deliverable ada; uji pasang di mesin bersih belum dijalankan — lihat `DECISIONS.md` G5.)
 
+### Pasca-G5 — Streaming
+- [x] `stream: true` (SSE) di data plane: fallback hanya sebelum event pertama, satu event error bila gagal setelah commit, usage dicatat saat stream berakhir, batas `Proxy:MaxStreamSeconds`. Ringkasan operasional ada di `gateway/README.md`.
+
 Setelah G5: Fase 2 chatbot (`DESIGN.md`) dengan `Ai:BaseUrl` mengarah ke gateway.
 
 ---
@@ -282,6 +296,6 @@ Setelah G5: Fase 2 chatbot (`DESIGN.md`) dengan `Ai:BaseUrl` mengarah ke gateway
 
 1. Nama produk dan namespace final.
 2. Angka default plan dan kebijakan (rate limit, kuota).
-3. Streaming (`stream: true`) masuk fase mana; sekarang ditunda sampai setelah G2.
+3. ~~Streaming (`stream: true`) masuk fase mana; sekarang ditunda sampai setelah G2.~~ **Selesai pasca-G5**: SSE di `POST /v1/chat/completions` (lihat bagian 4); sisa pekerjaan adaptor keluarga API lain ada di poin 4.
 4. Format klien kedua (Anthropic Messages) dan provider non-OpenAI; ditunda.
 5. Penagihan (invoice, pembayaran) di luar cakupan; gateway hanya menyediakan data pemakaian dan biaya.

@@ -7,7 +7,8 @@ namespace AiGateway.Core.Maintenance;
 
 /// <summary>
 /// Catat satu eksekusi job ke <c>job_runs</c> (running → succeeded/failed). Kegagalan job tidak boleh
-/// menghentikan pekerja; detail dibatasi 400 karakter.
+/// menghentikan pekerja; detail dibatasi 400 karakter. Pembatalan saat host berhenti menutup baris tanpa
+/// menandainya gagal, dan baris penutup disimpan dengan token sendiri supaya tidak tertinggal "running".
 /// </summary>
 public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILogger<JobRunRecorder> log)
 {
@@ -30,6 +31,12 @@ public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILog
             run.Detail = Trim(await job());
             run.Status = JobRunStatuses.Succeeded;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Penghentian host bukan kegagalan job: baris ditutup tanpa status failed (skema hanya punya
+            // running/succeeded/failed).
+            run.Detail = "dibatalkan: penghentian host";
+        }
         catch (Exception ex)
         {
             run.Status = JobRunStatuses.Failed;
@@ -38,7 +45,8 @@ public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILog
         }
 
         run.FinishedAt = clock.GetUtcNow().UtcDateTime;
-        try { await db.SaveChangesAsync(ct); }
+        // Token sendiri: saat host berhenti, ct sudah batal dan baris akan tertinggal "running" tanpa penutup.
+        try { await db.SaveChangesAsync(CancellationToken.None); }
         catch (Exception ex) { log.LogError(ex, "Gagal menutup catatan job {JobName}", jobName); }
     }
 

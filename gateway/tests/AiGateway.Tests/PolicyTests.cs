@@ -80,6 +80,62 @@ public class PolicyTests(TestDb db) : GatewayTestBase(db)
         Assert.Null(JsonNode.Parse(Upstream.Requests.Single().Body)!["max_tokens"]);
     }
 
+    [Theory]
+    [InlineData("\"99999\"")] // string
+    [InlineData("4000.5")]    // pecahan
+    [InlineData("0")]
+    [InlineData("-3")]
+    public async Task Completion_token_limits_that_are_not_positive_integers_become_the_policy_limit(string raw)
+    {
+        var s = await SetupAsync(maxOutput: 1000);
+        await SetPolicyAsync(s, PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 300));
+
+        Assert.Equal(HttpStatusCode.OK, (await CallAsync(s.ApiKey, Chat(extra: $",\"max_completion_tokens\":{raw}"))).Status);
+
+        Assert.Equal(300, (int?)JsonNode.Parse(Upstream.Requests.Single().Body)!["max_completion_tokens"]);
+    }
+
+    [Fact]
+    public async Task Both_token_limit_fields_are_clamped_when_one_is_odd()
+    {
+        var s = await SetupAsync(maxOutput: 1000);
+        await SetPolicyAsync(s, PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 300));
+
+        await CallAsync(s.ApiKey, Chat(extra: ",\"max_tokens\":5000,\"max_completion_tokens\":\"4000\""));
+
+        var sent = JsonNode.Parse(Upstream.Requests.Single().Body)!;
+        Assert.Equal(300, (int?)sent["max_tokens"]);
+        Assert.Equal(300, (int?)sent["max_completion_tokens"]);
+    }
+
+    [Fact]
+    public async Task Models_endpoint_returns_only_models_allowed_by_every_scope()
+    {
+        var s = await SetupAsync(alias: "model-a");
+        await WithTenantAsync(s.TenantId, async (prov, _) =>
+        {
+            await prov.CreateModelAsync(new ModelSpec("model-b", "x"), [new RouteSpec(s.ProviderId, "x")], default);
+            return 0;
+        });
+        await SetPolicyAsync(s, PolicyScopes.Tenant, s.TenantId, new PolicySpec(AllowedModels: ["model-a", "model-b"]));
+        await SetPolicyAsync(s, PolicyScopes.Key, s.KeyId, new PolicySpec(AllowedModels: ["model-a"]));
+
+        Assert.Equal(["model-a"], await ListModelsAsync(s.ApiKey)); // irisan tenant dan key
+
+        await SetPolicyAsync(s, PolicyScopes.Key, s.KeyId, new PolicySpec(AllowedModels: ["model-a", "model-b"]));
+
+        Assert.Equal(["model-a", "model-b"], await ListModelsAsync(s.ApiKey));
+    }
+
+    private async Task<string[]> ListModelsAsync(string apiKey)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
+        var response = await Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return ((JsonArray)(await BodyAsync(response))["data"]!).Select(n => (string)n!["id"]!).ToArray();
+    }
+
     [Fact]
     public async Task Daily_quota_denies_once_the_scope_has_used_it_and_reports_retry_after()
     {

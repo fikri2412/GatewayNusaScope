@@ -97,9 +97,9 @@ public static class ModelEndpoints
         var routes = await ToRoutesAsync(r.Routes, ids, ct);
         var spec = new ModelSpec(r.Alias ?? "", routes.FirstOrDefault()?.UpstreamModel ?? "", r.MaxOutputTokens,
             r.Price?.Input, r.Price?.Output, r.Price?.Currency ?? "USD", r.Price?.CacheRead, r.Price?.CacheWrite,
-            r.Price?.Tiers?.Select(t => new PriceTier(t.MinInputTokens, t.Input, t.Output, t.CacheRead, t.CacheWrite)).ToList());
+            r.Price?.Tiers?.Select(t => new PriceTier(t.MinInputTokens, t.Input, t.Output, t.CacheRead, t.CacheWrite)).ToList(),
+            r.Description);
         var model = await prov.CreateModelAsync(spec, routes, ct);
-        if (!string.IsNullOrEmpty(r.Description)) await prov.UpdateModelAsync(model.Id, new ModelPatch(Description: r.Description), ct);
         await audit.WriteAsync("model.create", "model", model.PublicId.ToString(), new { model.Alias, routes = routes.Count });
         return Results.Created($"/admin/api/models/{model.PublicId}", (await LoadAsync(db, model.PublicId, ct)).First());
     }

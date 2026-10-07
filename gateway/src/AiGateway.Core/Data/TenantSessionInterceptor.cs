@@ -143,6 +143,10 @@ public sealed class TenantSessionInterceptor : DbCommandInterceptor, IDbConnecti
 
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            // ponytail: @read_only tidak dipakai karena key harus bisa diganti saat tenant berganti pada
+            // koneksi yang sama (pooled/terbuka). Batas yang diterima: SQL injection di dalam proses ini
+            // bisa memanggil sp_set_session_context untuk tenant lain lalu menembus RLS. Upgrade path:
+            // koneksi/pool terpisah per tenant supaya @read_only = 1 bisa dipakai.
             command.CommandText = "EXEC sys.sp_set_session_context @key = @key, @value = @value;";
             AddParameter(command, "@key", DbType.String, SessionContextKey);
             AddParameter(command, "@value", DbType.Int64,
@@ -152,10 +156,16 @@ public sealed class TenantSessionInterceptor : DbCommandInterceptor, IDbConnecti
                 command.ExecuteNonQuery();
             }
             // ponytail: database sedang di-drop/ditutup (drop database, restore, failover) tidak bisa memasang
-            // context; buang koneksi fisik itu dari pool agar tidak mewarisi sesi "kill state". Error lain tetap dilempar.
-            catch (SqlException ex) when (ex.Number is 596 or 233 or 4060 or 911 or 3701 or 3702)
+            // context; buang koneksi fisik itu dari pool agar tidak mewarisi sesi "kill state". Empat nomor ini
+            // berarti sesi/database sudah tidak terpakai, jadi command pemanggil gagal sendiri - tidak ada
+            // command yang jalan dengan SESSION_CONTEXT tenant lama. Koneksi sengaja tidak ditutup di sini
+            // karena alur drop database (EnsureDeleted di test/operasi) bergantung pada swallow ini; error
+            // lain tetap dilempar.
+            catch (SqlException ex) when (ex.Number is 596 or 233 or 4060 or 911)
             {
                 if (connection is SqlConnection sql) SqlConnection.ClearPool(sql);
+                state.Applied = false;
+                state.AppliedTenant = GatewayDbContext.NoTenant;
                 return;
             }
 

@@ -43,18 +43,26 @@ public sealed class FakeUpstream : HttpMessageHandler
     }
 }
 
-/// <summary>Host gateway sungguhan di atas database uji, dengan upstream palsu dan IP klien yang bisa diatur lewat header.</summary>
-public sealed class GatewayFactory(string connectionString, FakeUpstream upstream) : WebApplicationFactory<Program>
+/// <summary>
+/// Host gateway sungguhan di atas database uji, dengan upstream palsu dan IP klien yang bisa diatur lewat header.
+/// Flag rls menyalakan lapis kedua (script tenant-security.sql dipasang sebelum host start); parameter
+/// authRequestsPerMinute menurunkan batas rate limit endpoint auth bila test memang mengujinya.
+/// </summary>
+public sealed class GatewayFactory(
+    string connectionString, FakeUpstream upstream, bool rls = false, int authRequestsPerMinute = 100_000)
+    : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        // Satu database per test class, jadi memasang RLS di sini tidak menyentuh test class lain.
+        if (rls) TestDb.InstallTenantSecurityScript(connectionString);
         builder.UseSetting("ConnectionStrings:Gateway", connectionString);
         builder.UseSetting("Seed:AdminEmail", "test-admin@example.test");
         builder.UseSetting("Seed:AdminPassword", "test-password-123456");
         builder.UseSetting("DevSeed:UpstreamApiKey", "");
         builder.UseSetting("Jwt:SigningKey", "test-signing-key-test-signing-key-0123456789");
         // Test melakukan banyak login dari 127.0.0.1; batas produksi (20/menit) tidak relevan di sini.
-        builder.UseSetting("Security:AuthRequestsPerMinute", "100000");
+        builder.UseSetting("Security:AuthRequestsPerMinute", authRequestsPerMinute.ToString());
         builder.ConfigureTestServices(services =>
         {
             services.AddHttpClient(ChatProxy.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);
@@ -86,10 +94,10 @@ public abstract class GatewayTestBase : IClassFixture<TestDb>, IDisposable
     protected readonly GatewayFactory Factory;
     protected readonly HttpClient Client;
 
-    protected GatewayTestBase(TestDb db)
+    protected GatewayTestBase(TestDb db, bool rls = false, int authRequestsPerMinute = 100_000)
     {
         Db = db;
-        Factory = new GatewayFactory(db.ConnectionString, Upstream);
+        Factory = new GatewayFactory(db.ConnectionString, Upstream, rls, authRequestsPerMinute);
         Client = Factory.CreateClient();
     }
 

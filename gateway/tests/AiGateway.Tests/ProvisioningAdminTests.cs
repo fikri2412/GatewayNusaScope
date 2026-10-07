@@ -5,6 +5,7 @@ using AiGateway.Core.Domain;
 using AiGateway.Core.Provisioning;
 using AiGateway.Core.Proxy;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AiGateway.Tests;
 
@@ -198,5 +199,69 @@ public class ProvisioningAdminTests(TestDb db) : GatewayTestBase(db)
             return 0;
         });
         Assert.Equal(HttpStatusCode.OK, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_stale_configuration_write_reports_a_conflict_instead_of_failing()
+    {
+        var s = await SetupAsync();
+        await InTenantAsync(s, async (prov, db) =>
+        {
+            var policy = await prov.SetPolicyAsync(PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 10), default);
+            // row_version naik di database tanpa entity yang dilacak di sini tahu (mis. permintaan admin lain).
+            await db.Database.ExecuteSqlRawAsync("UPDATE policies SET max_tokens_per_request = 20 WHERE id = {0}", policy.Id);
+
+            var ex = await Assert.ThrowsAsync<GatewayException>(() =>
+                prov.SetPolicyAsync(PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 30), default));
+
+            Assert.Equal((409, "concurrent_update"), (ex.Status, ex.Code));
+            return 0;
+        });
+    }
+
+    [Fact]
+    public async Task Importing_models_validates_every_spec_before_writing_anything()
+    {
+        var s = await SetupAsync();
+        await InTenantAsync(s, async (prov, _) =>
+        {
+            Assert.Equal("invalid_alias", await CodeOf(() => prov.ImportModelsAsync(s.ProviderId,
+                [new ModelSpec("fine-model", "fine-model"), new ModelSpec("bad model", "bad-model")], default)));
+            return 0;
+        });
+
+        await using var check = Db.NewContext(s.TenantId);
+        Assert.Empty(await check.Models.Where(m => m.Alias == "fine-model").ToListAsync()); // spec pertama tidak ikut tersimpan
+        Assert.Empty(await check.ModelRoutes.Where(r => r.UpstreamModel == "fine-model").ToListAsync());
+    }
+
+    [Fact]
+    public async Task Concurrent_project_creation_cannot_exceed_the_plan_limit()
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var plan = await scope.ServiceProvider.GetRequiredService<PlatformService>()
+            .CreatePlanAsync(new PlanSpec($"race-{Guid.NewGuid():N}", MaxProjects: 1, MaxApiKeys: null, MaxRequestsPerMonth: null, MaxTokensPerMonth: null), default);
+        var tenant = await scope.ServiceProvider.GetRequiredService<ProvisioningService>()
+            .CreateTenantAsync("Race", Guid.NewGuid().ToString("N"), plan.Id, default);
+
+        async Task<string> TryCreateAsync(string name)
+        {
+            await using var own = Factory.Services.CreateAsyncScope();
+            var db = own.ServiceProvider.GetRequiredService<GatewayDbContext>();
+            db.CurrentTenantId = tenant.Id;
+            try
+            {
+                await own.ServiceProvider.GetRequiredService<ProvisioningService>().CreateProjectAsync(name, default);
+                return "created";
+            }
+            catch (GatewayException ex) { return ex.Code; }
+        }
+
+        var results = await Task.WhenAll(TryCreateAsync("race-a"), TryCreateAsync("race-b"));
+
+        Assert.Equal(1, results.Count(r => r == "created"));
+        Assert.Equal("plan_limit_reached", Assert.Single(results, r => r != "created"));
+        await using var check = Db.NewContext(tenant.Id);
+        Assert.Single(await check.Projects.ToListAsync());
     }
 }

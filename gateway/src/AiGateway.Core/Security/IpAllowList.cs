@@ -24,13 +24,25 @@ public static class IpAllowList
         {
             if (entry.Contains('/'))
             {
-                if (IPNetwork.TryParse(entry, out var net) && net.Contains(clientIp)) return true;
+                if (IPNetwork.TryParse(entry, out var net) && ContainsNetwork(net, clientIp)) return true;
             }
-            else if (IPAddress.TryParse(entry, out var ip) && ip.Equals(clientIp))
+            else if (IPAddress.TryParse(entry, out var ip) && Normalize(ip).Equals(clientIp))
             {
                 return true;
             }
         }
         return false;
+    }
+
+    /// <summary>::ffff:1.2.3.4 dan 1.2.3.4 adalah alamat yang sama; <see cref="IPAddress.Equals"/> butuh keluarga yang sama.</summary>
+    private static IPAddress Normalize(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    /// <summary>Rentang IPv4-mapped (::ffff:0:0/96 ke atas) dicocokkan sebagai rentang IPv4-nya agar klien IPv4 ikut cocok.</summary>
+    private static bool ContainsNetwork(IPNetwork network, IPAddress client)
+    {
+        if (!network.BaseAddress.IsIPv4MappedToIPv6) return network.Contains(client);
+        // Di bawah /96 cakupannya bukan lagi alamat IPv4; dibiarkan apa adanya supaya tidak melebar jadi semua IPv4.
+        if (network.PrefixLength < 96) return network.Contains(client);
+        return new IPNetwork(network.BaseAddress.MapToIPv4(), network.PrefixLength - 96).Contains(client);
     }
 }

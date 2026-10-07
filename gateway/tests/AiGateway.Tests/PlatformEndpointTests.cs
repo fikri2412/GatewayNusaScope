@@ -98,6 +98,9 @@ public class PlatformEndpointTests(TestDb db) : GatewayTestBase(db)
         }
 
         Assert.Equal(HttpStatusCode.OK, (await SendAsync(HttpMethod.Get, "/platform/api/plans", admin)).StatusCode);
+
+        // Token platform juga tidak bisa masuk ke plane tenant (kebijakan peran terpisah).
+        Assert.Equal(HttpStatusCode.Forbidden, (await SendAsync(HttpMethod.Get, "/admin/api/projects", admin)).StatusCode);
     }
 
     [Fact]
@@ -452,7 +455,8 @@ public class PlatformEndpointTests(TestDb db) : GatewayTestBase(db)
         var items = audit["items"]!.AsArray();
         Assert.Equal(1, (int?)audit["pageNumber"]);
         Assert.Equal(200, (int?)audit["pageSize"]);
-        Assert.True((long?)audit["total"] >= items.Count);
+        await using (var auditCtx = Db.NewContext())
+            Assert.Equal(await auditCtx.AuditLogs.CountAsync(), (long?)audit["total"]); // plane platform melihat seluruh baris audit
         Assert.Contains(items, i => (string?)i!["action"] == "tenant.create" && (string?)i!["entity"] == "tenant");
         Assert.Contains(items, i => (string?)i!["action"] == "provider.create"); // aksi tenant ikut terlihat, detailnya tidak
         Assert.All(items, i => Assert.Null(i!["detailJson"])); // metadata saja, tanpa detail milik tenant

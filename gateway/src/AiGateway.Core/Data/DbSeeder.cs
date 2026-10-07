@@ -1,6 +1,7 @@
 using AiGateway.Core.Domain;
 using AiGateway.Core.Options;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -24,11 +25,30 @@ public sealed class DbSeeder(
         if (!await db.Plans.AnyAsync(p => p.Name == DefaultPlanName, ct))
         {
             db.Plans.Add(new Plan { Name = DefaultPlanName });
-            await db.SaveChangesAsync(ct);
+            await SaveIgnoringDuplicateAsync($"plan {DefaultPlanName}", ct);
         }
 
         await SeedCatalogAsync(ct);
         await SeedAdminAsync(ct);
+    }
+
+    /// <summary>
+    /// Simpan data awal; pelanggaran indeks unik berarti barisnya sudah ada (start kedua yang berbarengan,
+    /// atau email/nama yang sudah dipakai baris lain), bukan kegagalan start. <c>false</c> = tidak tersimpan.
+    /// </summary>
+    private async Task<bool> SaveIgnoringDuplicateAsync(string what, CancellationToken ct)
+    {
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 2601 or 2627 })
+        {
+            db.ChangeTracker.Clear();
+            log.LogInformation("Data awal {What} sudah ada; tidak ditimpa.", what);
+            return false;
+        }
     }
 
     /// <summary>
@@ -49,7 +69,8 @@ public sealed class DbSeeder(
                 SyncUrl = OpenCodeConfigUrl,
             };
             db.ProviderTemplates.Add(template);
-            await db.SaveChangesAsync(ct);
+            if (!await SaveIgnoringDuplicateAsync($"template {OpenCodeTemplateCode}", ct))
+                template = await db.ProviderTemplates.FirstAsync(t => t.Code == OpenCodeTemplateCode, ct);
         }
 
         if (!await db.CatalogModels.AnyAsync(m => m.TemplateId == template.Id && m.UpstreamModel == OpenCodeDefaultModel, ct))
@@ -62,7 +83,7 @@ public sealed class DbSeeder(
                 SupportsReasoning = true,
                 Source = CatalogSources.Seed,
             });
-            await db.SaveChangesAsync(ct);
+            await SaveIgnoringDuplicateAsync($"model katalog {OpenCodeDefaultModel}", ct);
         }
     }
 
@@ -86,7 +107,9 @@ public sealed class DbSeeder(
         };
         user.PasswordHash = hasher.HashPassword(user, s.AdminPassword);
         db.Users.Add(user);
-        await db.SaveChangesAsync(ct);
-        log.LogInformation("Platform admin dibuat: {Email}", user.Email);
+        if (await SaveIgnoringDuplicateAsync("platform admin", ct))
+            log.LogInformation("Platform admin dibuat: {Email}", user.Email);
+        else
+            log.LogWarning("Platform admin {Email} tidak dibuat: email sudah dipakai user lain atau dibuat proses lain.", user.Email);
     }
 }

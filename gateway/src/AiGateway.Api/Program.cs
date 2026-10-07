@@ -11,6 +11,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
+// Lifetime Windows Service (SCM) saat host dijalankan lewat scripts/install-service.ps1; no-op di luar service.
+builder.Host.UseWindowsService();
 
 builder.Services.AddOpenApi();
 builder.Services.AddGatewayCore(builder.Configuration);
@@ -33,6 +35,9 @@ using (var scope = app.Services.CreateScope())
         await DevSeeder.RunAsync(sp, app.Lifetime.ApplicationStopping);
 }
 
+// Paling awal: pakai IP/skema klien asli dari X-Forwarded-* (hanya dari proxy tepercaya) supaya rate limit login,
+// audit, allowed_ips, dan usage_logs.client_ip melihat IP pemanggil, bukan IP reverse proxy.
+app.UseTrustedForwardedHeaders();
 app.UseExceptionHandler(_ => { }); // jawaban dibentuk oleh GatewayExceptionHandler
 app.UseRequestProtection();
 app.UseRateLimiter();

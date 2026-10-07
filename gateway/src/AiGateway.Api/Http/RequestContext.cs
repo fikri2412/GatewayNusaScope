@@ -23,7 +23,6 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
         if (user.Identity?.IsAuthenticated == true)
         {
             if (long.TryParse(user.FindFirstValue(JwtRegisteredClaimNames.Sub), out var userId)) actor.UserId = userId;
-            actor.Role = user.FindFirstValue(ClaimTypes.Role);
             if (long.TryParse(user.FindFirstValue(ClaimNames.TenantId), out var tenantId))
             {
                 actor.TenantId = tenantId;

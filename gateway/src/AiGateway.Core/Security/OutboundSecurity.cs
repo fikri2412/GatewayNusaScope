@@ -28,6 +28,7 @@ public sealed class OutboundSecurityPolicy
         IPNetwork.Parse("172.16.0.0/12"),   // privat
         IPNetwork.Parse("192.0.0.0/24"),    // penugasan protokol IETF
         IPNetwork.Parse("192.0.2.0/24"),    // dokumentasi
+        IPNetwork.Parse("192.88.99.0/24"),  // 6to4 relay anycast (usang)
         IPNetwork.Parse("192.168.0.0/16"),  // privat
         IPNetwork.Parse("198.18.0.0/15"),   // benchmarking
         IPNetwork.Parse("198.51.100.0/24"), // dokumentasi
@@ -38,7 +39,9 @@ public sealed class OutboundSecurityPolicy
         IPNetwork.Parse("64:ff9b::/96"),    // NAT64 well-known
         IPNetwork.Parse("64:ff9b:1::/48"),  // NAT64 local-use
         IPNetwork.Parse("100::/64"),        // discard-only
+        IPNetwork.Parse("2001::/23"),       // penugasan protokol IETF, termasuk Teredo 2001::/32
         IPNetwork.Parse("2001:db8::/32"),   // dokumentasi
+        IPNetwork.Parse("2002::/16"),       // 6to4 (menyematkan alamat IPv4)
         IPNetwork.Parse("fc00::/7"),        // unique local
         IPNetwork.Parse("fec0::/10"),       // site-local (usang)
         IPNetwork.Parse("fe80::/10"),       // link-local
@@ -191,9 +194,10 @@ public static class OutboundSecurity
     }
 
     /// <summary>
-    /// Handler upstream: tanpa redirect, tanpa proxy lingkungan, dan <c>ConnectCallback</c> yang me-resolve +
-    /// memvalidasi alamat tepat sebelum koneksi. TLS tetap diurus handler terhadap hostname asli permintaan.
-    /// Pakai sebagai primary handler klien keluar, mis. <c>ConfigurePrimaryHttpMessageHandler(OutboundSecurity.CreateHandler)</c>.
+    /// Handler upstream: tanpa redirect, tanpa proxy lingkungan, batas koneksi/timeout connect, dan <c>ConnectCallback</c>
+    /// yang me-resolve + memvalidasi alamat tepat sebelum koneksi. TLS tetap diurus handler terhadap hostname asli
+    /// permintaan. Pakai sebagai primary handler klien keluar, mis.
+    /// <c>ConfigurePrimaryHttpMessageHandler(OutboundSecurity.CreateHandler)</c>.
     /// </summary>
     public static SocketsHttpHandler CreateHandler(IServiceProvider services)
     {
@@ -202,6 +206,9 @@ public static class OutboundSecurity
         {
             AllowAutoRedirect = false,
             UseProxy = false,
+            // Batas per handler (global), bukan per tenant; batas konkurensi per tenant bukan di lapisan ini.
+            MaxConnectionsPerServer = 100,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             ConnectCallback = (context, ct) => policy.ConnectAsync(context.DnsEndPoint, ct),
         };

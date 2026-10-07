@@ -53,7 +53,7 @@ Diisi oleh agent setelah setiap fase. Format:
 
 - Yang dikerjakan:
   - `gateway/` (solution `AiGateway.slnx`): `AiGateway.Core` (entity, `GatewayDbContext`, options, `DbSeeder`), `AiGateway.Api` (port 5090, `/healthz`), `AiGateway.Tests`, `web/` (Vite React TS, port 5174, build ke `src/AiGateway.Api/wwwroot`). Tidak ada referensi ke `OperatorAi.*`.
-  - Database `AiGateway` (LocalDB `(localdb)\MSSQLLocalDB`), migration `Initial`, 18 tabel Tingkat 1 sesuai `GATEWAY.md` bagian 6 (diverifikasi lewat `sqlcmd`: 18 tabel, 12 CHECK constraint, 5 indeks unik berfilter).
+  - Database `AiGateway` (LocalDB `(localdb)\MSSQLLocalDB`), migration `Initial`, 18 tabel Tingkat 1 sesuai `GATEWAY.md` bagian 6 (diverifikasi lewat `sqlcmd` saat G0: 18 tabel, 12 CHECK constraint, 5 indeks unik berfilter). Angka itu berubah setelah migration `Initial` di-reset di G1; kondisi sekarang: 20 tabel Tingkat 1 + 6 tabel G4 = 26 tabel, 16 CHECK constraint, 4 indeks unik berfilter.
   - Seed idempoten: plan `Default` (tanpa batas) dan satu platform admin `admin@gateway.local`. Password acak dibuat agent dan disimpan di user-secrets (`Seed:AdminPassword`, project `AiGateway.Api`); baca dengan `dotnet user-secrets list --project gateway/src/AiGateway.Api`.
   - Verifikasi: `dotnet build` 0 warning, `dotnet test` 7 lulus (isolasi tenant, constraint, seeder), `npm run build` sukses, API start dan `GET /healthz` 200.
 - Keputusan dan alasannya:
@@ -136,7 +136,7 @@ Diisi oleh agent setelah setiap fase. Format:
 - Yang dikerjakan:
   - **Data Protection**: kunci disimpan di database dan dienkripsi sebelum disimpan — DPAPI (Windows, current user) atau sertifikat bila `Security:KeyCertificateThumbprint` diisi; startup gagal di luar Windows tanpa sertifikat. Ciphertext provider tidak lagi berupa XML polos.
   - **Anti-SSRF** (`OutboundSecurity`): validasi statis saat provider/katalog dikonfigurasi (https wajib, tanpa userinfo/query/fragment, host literal privat ditolak) + validasi ulang tepat sebelum socket dibuka lewat `ConnectCallback` (host di-resolve di situ dan hanya alamat yang lolos yang disambung; redirect dan proxy lingkungan dimatikan). Rentang privat/loopback/link-local/multicast/NAT64/documentation ditolak; pengecualian hanya lewat `Security:AllowedPrivateNetworks` (CIDR/IP/nama host). Berlaku untuk trafik upstream, discover, sinkronisasi katalog, dan webhook.
-  - **RLS SQL Server** (`gateway/sql/tenant-security.sql`): role `gateway_app`/`gateway_platform`/`gateway_migration`, predikat `rls.fn_tenant_access` (SESSION_CONTEXT `tenant_id` ATAU keanggotaan `gateway_platform`; flag session apa pun diabaikan), FILTER + BLOCK INSERT/UPDATE untuk semua tabel tenant (termasuk tabel maintenance G4), `audit_logs` append-only untuk app (DENY UPDATE/DELETE), dan prosedur `dbo.api_key_bootstrap` (`EXECUTE AS` user pembaca) sebagai satu-satunya pembacaan sebelum tenant diketahui. `TenantSessionInterceptor` memasang SESSION_CONTEXT per koneksi (pooled/terbuka) dan fail-closed saat tanpa tenant.
+  - **RLS SQL Server** (`gateway/sql/tenant-security.sql`): role `gateway_app`/`gateway_platform`/`gateway_migration`, predikat `rls.fn_tenant_access` (SESSION_CONTEXT `tenant_id` ATAU keanggotaan `gateway_platform`; flag session apa pun diabaikan), FILTER + BLOCK INSERT/UPDATE untuk 16 tabel yang punya `tenant_id` (11 inti + 5 maintenance G4); `users`, `refresh_tokens`, `user_tokens`, `tenants`, dan `job_runs` sengaja di luar RLS (hanya filter aplikasi). `audit_logs` append-only untuk app (DENY UPDATE/DELETE), dan prosedur `dbo.api_key_bootstrap` (`EXECUTE AS` user pembaca) sebagai satu-satunya pembacaan sebelum tenant diketahui. `TenantSessionInterceptor` memasang SESSION_CONTEXT per koneksi (pooled/terbuka) dan fail-closed saat tanpa tenant.
   - **Maintenance**: `request_bodies` opt-in per project (`log_content`) dengan masa simpan sendiri, retensi `usage_logs` yang merekonsiliasi `usage_daily` lebih dulu (agregat historis tetap utuh), `job_runs`, alert kuota (daily/monthly token, budget; dedup per rule+periode+ambang), webhook HTTPS dengan tanda tangan HMAC + retry/backoff dan log pengiriman. Worker latar berjalan per siklus; koneksi platform opsional lewat `ConnectionStrings:GatewayPlatform`.
   - **Pengerasan HTTP**: rate limit login per IP (429 + `Retry-After`), batas ukuran body admin, header keamanan (CSP, nosniff, frame deny, referrer), `Cache-Control: no-store` untuk API admin, metrik dasar `gateway.http.requests`/`gateway.http.duration`.
   - Uji keamanan manual (dijalankan, bukan hanya test): brute force 5x gagal → akun terkunci (429 `account_locked`); SSRF http/127.0.0.1/link-local/userinfo → 400 `invalid_base_url`; IDOR project tenant lain → 404; token platform di `/admin/api` → 403; pemindaian log tidak menemukan key provider maupun key klien (hanya baris seed dev sekali yang memang disengaja).
@@ -169,13 +169,64 @@ Diisi oleh agent setelah setiap fase. Format:
   - Uji pasang di mesin bersih (tanpa SDK dev): publish, isi secret lewat registry/Environment service, jalankan `sql/tenant-security.sql`, lalu login dan panggil data plane.
   - Mesin ini memblokir eksekusi apphost `.exe` (`Access is denied`); jalankan lewat `dotnet <app>.dll` atau whitelist exe. Sudah dicatat di troubleshooting README.
 
+## 2026-10-07 — Gateway: audit independen + pengerasan (di luar fase G0–G5)
+
+- Yang dikerjakan:
+  - Gateway ditulis berurutan oleh tiga model berbeda, jadi diaudit baca-saja oleh 8 reviewer paralel per slice (data plane, keamanan/HTTP, data layer + RLS, auth, admin/provisioning, maintenance, test, dokumen). **Web UI (`gateway/web`) sengaja tidak diaudit** (ditunda atas permintaan user; baseline: `npm run build` sukses, `oxlint` punya warning `exhaustive-deps`/`set-state-in-effect` di `ui.tsx` yang belum dinilai).
+  - Data plane: clamp `max_tokens`/`max_completion_tokens` kini menimpa nilai non-integer/negatif/di luar jangkauan (sebelumnya lolos ke upstream); `GET /v1/models` memfilter dengan kebijakan yang sama dengan chat; `stream` selain absen/null/false ditolak 400; body upstream dibatasi `Proxy:MaxResponseBytes` (8 MB; juga untuk discover dan sinkronisasi katalog); `base_url` provider divalidasi https lagi saat forwarding (key provider tidak pernah dikirim lewat http); body error 4xx upstream yang bukan JSON diganti error gateway; gerbang konkurensi per tenant (`Proxy:MaxConcurrentPerTenant` = 64, 429 `concurrency_limit_exceeded`); allow-list IP menormalkan IPv4-mapped; `TimeProvider` dipakai konsisten.
+  - Host/keamanan: `UseForwardedHeaders` (default hanya proxy loopback; proxy lain lewat `Security:TrustedProxies`) — tanpa ini `allowed_ips` dan rate limit per IP rusak di belakang reverse proxy; `UseWindowsService()` (tanpa itu service gagal start, SCM error 1053); `install-service.ps1` menulis Environment multi-string dengan merge (tidak menghapus secret); `MaxConnectionsPerServer` + `ConnectTimeout` pada handler upstream; rentang SSRF 6to4/Teredo/IETF/192.88.99.0/24; versi paket Microsoft.* dipin ke 9.0.20, `EntityFrameworkCore.Design` tidak ikut publish.
+  - Auth: lockout bukan lagi oracle keberadaan akun (password diverifikasi dulu); grace 10 detik pada pemakaian ulang refresh token; klaim refresh tidak di-rollback di jalur user nonaktif; invite/reset token ditolak untuk akun nonaktif; audit reset/redeem memuat user dan tenant; daftar user dibatasi 500; `refresh_tokens`/`user_tokens` kedaluwarsa dipurge retensi (7 hari).
+  - RLS/audit: baris audit yang punya tenant kini ditulis dengan konteks tenant barisnya (sebelumnya ditolak diam-diam predikat RLS, jadi login tenant tidak tercatat di produksi dengan RLS); script RLS dalam satu transaksi dengan guard tabel; seeder tahan race; ada test pertama yang menjalankan host sungguhan di database ber-RLS.
+  - Admin: validasi harga di `POST /models` sama dengan `POST /models/{id}/prices` (sebelumnya 500); tidak ada lagi create-lalu-validasi (resource separuh jadi); batas plan project/key diserialkan lewat `UPDLOCK` pada baris tenant; impor model atomik dan maksimal 500; ekspor CSV satu penulis dan 400 `export_too_large` (sebelumnya terpotong diam-diam di 100.000 baris); `expiresAt` naif dianggap UTC; `page` di-clamp; template provider wajib https; sinkronisasi katalog melewati key provider yang tidak valid; race → 409.
+  - Maintenance: kontainer platform kini punya klien webhook (**sebelumnya pengiriman webhook mati total bila `ConnectionStrings:GatewayPlatform` diisi**); alert event + delivery dalam satu transaksi; webhook menandatangani `"{timestamp}.{payload}"` dengan header `X-Gateway-Timestamp` (**berubah, penerima harus menyesuaikan**); retensi `usage_logs` per batch; `JobRunRecorder` aman saat shutdown; peringatan startup bila `GatewayPlatform` kosong; `RecordTimeoutSeconds` default 2.
+  - Test: 219 → 297 lulus + 1 skip (smoke jaringan kini tampil sebagai skipped, bukan lulus palsu). Test baru menjaga tiap perbaikan, termasuk 15 route provider/model yang sebelumnya tanpa test HTTP (isolasi tenant + peran). Uji mutasi: membalik clamp dan penulisan audit membuat 11 test gagal tepat di tempat yang diharapkan. 3 run penuh berturut-turut hijau.
+  - Smoke nyata (host sungguhan, database sementara): migration + seed + sinkronisasi katalog live (112 model), `/healthz` 200, key salah 401, `stream:"true"` 400, panggilan `deepseek-v4.1-flash` ke OpenCode 200 dengan `max_tokens:"9999999"` (diklem), biaya 0.0000279 tercatat, login platform admin + buat tenant + audit tercatat, token platform di `/admin/api` 403, header keamanan terkirim.
+  - Kebersihan database: 16 database `AiGateway_Test_*` sisa run yang dimatikan paksa dibuang; `TestDb` kini membuang database uji berumur >1 jam sekali per proses test; database smoke `AiGateway_Smoke` dibuang setelah dipakai. Setelah run penuh: 0 database test tersisa.
+- Keputusan dan alasannya:
+  - Respons 200 tanpa `usage` dicatat 0 token/0 biaya + Warning di log, tidak ditolak dan tidak ditaksir: tenant mengontrol upstream-nya sendiri dan bisa melaporkan angka apa pun, jadi itu bukan celah kuota.
+  - Baris audit tenant NULL (aksi platform, login platform admin, login gagal, accept-invite) tetap ditolak RLS saat aplikasi memakai `gateway_app`; predikat tidak dilonggarkan karena tenant akan bisa memalsukan audit tingkat platform. Dicatat sebagai Error di log. Solusi sebenarnya: plane platform HTTP di koneksi `gateway_platform` (langkah berikutnya no. 2).
+  - `@read_only` pada SESSION_CONTEXT tidak dipakai (kunci harus bisa ganti tenant pada koneksi terbuka/pooled); batas diterima dan ditandai `ponytail:`. Daftar error yang diabaikan interceptor dipersempit ke 596/233/4060/911.
+  - Grace 10 detik pada refresh token: pencurian yang mengulang token dalam 10 detik pertama hanya ditolak, tidak mencabut semua sesi (trade-off diterima).
+- Batas yang diketahui (ditandai `ponytail:` di kode):
+  - Pengiriman webhook, rate limiter, dan gerbang konkurensi mengasumsikan satu instance.
+  - Percobaan fallback yang dibuang tidak dicatat sendiri (biaya sisi provider tidak terlihat di `usage_logs`).
+  - Retensi `usage_logs` men-scan per jam karena belum ada indeks `created_at` (butuh migration; ditunda).
+  - `job_runs` yang terhenti karena shutdown berstatus `running` dengan `finished_at` terisi (skema hanya running/succeeded/failed).
+  - Request tanpa `Content-Type` ke route admin yang membutuhkan body mendapat 404 "Endpoint tidak ditemukan", bukan 415.
+- Hal yang perlu dicek manusia:
+  - Penerima webhook harus memverifikasi `X-Gateway-Timestamp` dan tanda tangan baru (README §6).
+  - `UseWindowsService()` baru ditambahkan dan belum diuji sebagai service sungguhan (uji pasang di mesin bersih tetap belum dijalankan).
+  - Web UI belum diaudit.
+
+## 2026-10-07 — Gateway: streaming SSE (pasca-G5)
+
+- Yang dikerjakan:
+  - `stream: true` di `POST /v1/chat/completions` kini menyalurkan SSE berformat OpenAI (sebelumnya ditolak 400 `streaming_not_supported`). Komponen: `SsePump` (pompa event demi event, `Core/Proxy/SsePump.cs`), `OpenStream` + `LimitedReadStream` (batas byte), `GatewayResponse.StreamBody` + `SseResult` di `DataPlaneEndpoints`, opsi `Proxy:MaxStreamSeconds` (900).
+  - Alur: semua pemeriksaan sebelum forwarding sama dengan respons utuh (auth, model, kebijakan, gerbang konkurensi); route dianggap "committed" setelah upstream menjawab 2xx `text/event-stream` dan event pertamanya terbaca (stream kosong atau event pertama `error` masih jatuh ke route berikutnya). Tiap chunk diteruskan dengan `model` diganti alias tenant dan di-flush di batas event; satu baris `usage_logs` ditulis saat stream berakhir (token dari chunk usage terakhir, harga sama dengan respons utuh, `ttfb_ms` = event pertama).
+  - Gateway selalu meminta `stream_options.include_usage` ke upstream (penagihan bergantung padanya); chunk usage-saja (`choices: []`) hanya diteruskan ke klien yang memintanya, kalau tidak dibuang karena klien naif membaca `choices[0]`.
+  - Verifikasi: 297 → 325 test lulus + 1 skip (`ProxyStreamingTests`: pengiriman bertahap lewat gate, alias, tagihan, usage chunk, validasi `stream`, fallback sebelum commit, error di tengah stream, timeout diam dan total, batas ukuran, klien putus = 499, slot konkurensi, baris non-data, `log_content`). Uji mutasi: menghapus flush, penggantian alias, pelepasan slot, dan penyembunyian usage membuat 11 test gagal tepat di tempat yang diharapkan. 3 run penuh hijau, 0 database test tersisa.
+  - Smoke nyata ke OpenCode (`deepseek-v4.1-flash`, database sementara yang dibuang setelahnya): event pertama ~0,7-1,2 dtk, ~52 event, `[DONE]`, usage chunk tersembunyi/diteruskan sesuai permintaan, biaya 0.0000738 untuk 42/51 token, klien putus tercatat 499, `stream:"yes"` → 400 `invalid_stream`.
+- Keputusan dan alasannya:
+  - `stream` selain absen/null/boolean → 400 `invalid_stream` (OpenAI juga menolak); kode `streaming_not_supported` dihapus.
+  - Fallback hanya sebelum event pertama (commit point); setelah itu kegagalan dikirim sebagai satu event `data: {"error":...}` lalu koneksi ditutup tanpa `[DONE]` (status 200 sudah terkirim), kodenya `upstream_stream_interrupted`/`upstream_stream_timeout`/`upstream_response_too_large`, dan hanya terlihat di `usage_logs`.
+  - `HttpClient.Timeout` ternyata tidak memotong body setelah header (diukur: stream 6 dtk dengan Timeout 2 dtk selesai), jadi batas dipasang sendiri: `Proxy:UpstreamTimeoutSeconds` untuk jeda antar baris, `Proxy:MaxStreamSeconds` untuk durasi total, `Proxy:MaxResponseBytes` untuk total byte.
+  - Pencatatan memakai `Finish` tanpa token request dan slot konkurensi dilepas di akhir pompa (juga saat klien putus atau pompa gagal), supaya pemakaian tidak hilang dan slot tidak bocor — dua hal yang rusak di proyek referensi Arkana.
+  - `usage` upstream yang dibaca kini lewat `Get()` aman-tipe: `usage` non-objek tidak lagi menyebabkan exception (celah lama di respons utuh ikut tertutup).
+- Batas yang diketahui:
+  - Klien putus sebelum chunk usage → token tercatat 0 (tidak diestimasi) walau upstream sudah memproses sebagian.
+  - Ringkasan `log_content` untuk stream hanya memuat teks `content` (delta tool call dan reasoning tidak dikumpulkan).
+  - Stream menahan satu slot konkurensi tenant selama berlangsung.
+- Hal yang perlu dicek manusia:
+  - Reverse proxy (IIS/ARR dan sejenisnya) harus mematikan buffering/kompresi respons untuk SSE; nginx sudah menerima `X-Accel-Buffering: no`.
+  - Hanya OpenCode yang diuji dengan `stream_options.include_usage`; provider lain yang menolak parameter itu akan menjawab 400 pada permintaan stream.
+
 ## 2026-10-07 — Status akhir sesi (handoff)
 
-Ringkasan untuk sesi berikutnya. **Fase gateway G0–G5 selesai dikerjakan**; chatbot (`DESIGN.md` Fase 2) belum disentuh.
+Ringkasan untuk sesi berikutnya. **Fase gateway G0–G5 selesai dikerjakan** dan streaming SSE sudah ditambahkan (bagian di atas); chatbot (`DESIGN.md` Fase 2) belum disentuh.
 
 **Yang sudah ada dan terverifikasi**
 
-- `gateway/` (Core, Api, Tests, web, sql, scripts, examples, README). Build `dotnet build` 0 warning/0 error (warnings-as-errors), `dotnet test` **219 lulus**, `npm run build` sukses, chatbot `dotnet build` tetap bersih.
+- `gateway/` (Core, Api, Tests, web, sql, scripts, examples, README). Build `dotnet build` 0 warning/0 error (warnings-as-errors), `dotnet test` **325 lulus + 1 skip** (219 sebelum audit, 297 sebelum streaming), `npm run build` sukses, chatbot `dotnet build` tetap bersih.
 - G3: auth JWT + refresh + lockout, API admin & platform lengkap, UI admin lengkap (sadar-peran; viewer hanya baca). Smoke nyata: login platform/owner/viewer, buat tenant + redeem undangan, CRUD alert dari UI.
 - G4: Data Protection (DPAPI/sertifikat), anti-SSRF (`OutboundSecurity`), RLS SQL Server (`sql/tenant-security.sql`) + `TenantSessionInterceptor`, maintenance (retensi, alert, webhook, job_runs), rate limit login per IP, batas body, header keamanan, metrik. Uji keamanan manual lulus: brute force → 429 `account_locked`; SSRF (http/127.0.0.1/link-local/userinfo) → 400 `invalid_base_url`; IDOR → 404; token platform di `/admin/api` → 403; log bebas key.
 - G5: `gateway/README.md` (pasang, service, RLS, operasional, backup/restore, upgrade, troubleshooting), `scripts/install-service.ps1` (lolos parse), contoh `examples/curl.md`, `examples/python/example.py`, `examples/dotnet/` — kedua contoh dijalankan sungguhan ke gateway hidup (200, usage tercatat).
@@ -187,7 +238,9 @@ Ringkasan untuk sesi berikutnya. **Fase gateway G0–G5 selesai dikerjakan**; ch
 2. Bila RLS akan diaktifkan di produksi: sambungkan plane platform HTTP ke koneksi principal `gateway_platform` (saat ini baru job latar lewat `ConnectionStrings:GatewayPlatform`); endpoint laporan/audit lintas tenant akan kosong tanpa itu.
 3. Fase 2 chatbot: arahkan `Ai:BaseUrl` worker ke gateway dan sesuaikan `DESIGN.md` §5/§9/§10 (tabel `ai_models`/`ai_policies`/`ai_calls` tidak dibuat di database chatbot).
 4. Rotasi key OpenCode (masih berizin All) dan buat service account izin **Inference only** untuk gateway dan chatbot.
-5. Ditunda sejak awal: streaming `stream: true`, adaptor `anthropic_messages`/`openai_responses`/`google_generate`, guardrail, invoice.
+5. Ditunda sejak awal: adaptor `anthropic_messages`/`openai_responses`/`google_generate`, guardrail, invoice.
+6. Audit dan perbaiki `gateway/web` (belum diaudit; mulai dari warning `exhaustive-deps` di `ui.tsx`).
+7. Index `usage_logs(created_at)` untuk retensi (butuh migration).
 
 **Cara cepat menjalankan**
 

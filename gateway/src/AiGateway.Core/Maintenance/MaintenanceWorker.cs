@@ -67,7 +67,7 @@ public sealed class MaintenanceWorker(
         RunJobAsync("maintenance.retention", ct, async sp =>
         {
             var r = await sp.GetRequiredService<RetentionService>().RunAsync(ct);
-            return $"bodies={r.BodiesDeleted};days={r.DaysReconciled};logs={r.LogsDeleted};deliveries={r.DeliveriesDeleted};jobRuns={r.JobRunsDeleted}";
+            return $"bodies={r.BodiesDeleted};days={r.DaysReconciled};logs={r.LogsDeleted};deliveries={r.DeliveriesDeleted};jobRuns={r.JobRunsDeleted};refreshTokens={r.RefreshTokensDeleted};userTokens={r.UserTokensDeleted}";
         });
 
     private Task RunAlertsAsync(CancellationToken ct) =>

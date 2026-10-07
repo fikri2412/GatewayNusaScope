@@ -10,8 +10,11 @@ public static class ErrorTypes
         Server = "server_error", Upstream = "upstream_error";
 }
 
-/// <summary>Respons data plane: status HTTP dan body JSON siap kirim.</summary>
-public sealed record GatewayResponse(int Status, string Body, string? RetryAfter = null)
+/// <summary>
+/// Respons data plane: status HTTP dan body JSON siap kirim. Bila <see cref="StreamBody"/> terisi, respons adalah SSE:
+/// endpoint mengirim header lalu menjalankannya (body diabaikan) dan pencatatan pemakaian dilakukan di dalamnya.
+/// </summary>
+public sealed record GatewayResponse(int Status, string Body, string? RetryAfter = null, Func<Stream, CancellationToken, Task>? StreamBody = null)
 {
     /// <summary>Error berformat OpenAI: <c>{"error":{"message","type","param","code"}}</c>.</summary>
     public static GatewayResponse Error(int status, string type, string code, string message, string? retryAfter = null) =>

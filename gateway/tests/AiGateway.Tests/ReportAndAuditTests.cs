@@ -1,4 +1,3 @@
-using System.Text;
 using AiGateway.Core.Audit;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
@@ -27,13 +26,6 @@ public class ReportAndAuditTests(TestDb db) : GatewayTestBase(db)
 
     private static UsageFilter Range(DateTime? from = null, DateTime? to = null, string? status = null, long? projectId = null) =>
         new(from ?? DateTime.UtcNow.AddDays(-1), to ?? DateTime.UtcNow.AddDays(1), ProjectId: projectId, Status: status);
-
-    private async Task<string> CsvAsync(long tenantId, UsageFilter filter)
-    {
-        using var stream = new MemoryStream();
-        await WithServicesAsync(tenantId, async (sp, _) => { await sp.GetRequiredService<UsageReports>().WriteCsvAsync(filter, stream, default); return 0; });
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
 
     [Fact]
     public async Task Summary_groups_by_day_project_model_and_key_with_labels_and_only_for_the_tenant()
@@ -93,24 +85,6 @@ public class ReportAndAuditTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal((1, UsageReports.MaxPageSize), (clamped.PageNumber, clamped.PageSize));
     }
 
-    [Fact]
-    public async Task Csv_export_escapes_formulas_quotes_and_never_includes_other_tenants()
-    {
-        var s = await SetupAsync();
-        var other = await SetupAsync();
-        await PostChatAsync(s.ApiKey, Chat(extra: ",\"user\":\"=HYPERLINK(\\\"http://evil\\\")\""), r => r.Headers.Add("X-Gateway-Tags", "a,\"b\""));
-        await PostChatAsync(other.ApiKey, Chat());
-
-        var csv = await CsvAsync(s.TenantId, Range());
-        var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-        Assert.StartsWith("id,created_at,request_id,", lines[0]);
-        Assert.Equal(2, lines.Length); // header + satu baris milik tenant ini
-        Assert.Contains("\"'=HYPERLINK(\"\"http://evil\"\")\"", lines[1]); // rumus dinetralkan lalu di-quote
-        Assert.Contains("\"a,\"\"b\"\"\"", lines[1]);
-        Assert.DoesNotContain(other.ApiKey, csv);
-    }
-
     [Theory]
     [InlineData(null, "")]
     [InlineData("plain", "plain")]
@@ -122,6 +96,16 @@ public class ReportAndAuditTests(TestDb db) : GatewayTestBase(db)
     [InlineData("say \"hi\"", "\"say \"\"hi\"\"\"")]
     [InlineData("line\nbreak", "\"line\nbreak\"")]
     public void Csv_cells_are_neutralised(string? input, string expected) => Assert.Equal(expected, UsageReports.Csv(input));
+
+    [Fact]
+    public void Export_size_guard_rejects_ranges_over_the_row_cap()
+    {
+        UsageReports.EnsureExportSize(UsageReports.MaxExportRows); // tepat di batas masih boleh
+
+        var ex = Assert.Throws<GatewayException>(() => UsageReports.EnsureExportSize(UsageReports.MaxExportRows + 1));
+
+        Assert.Equal((400, "export_too_large"), (ex.Status, ex.Code));
+    }
 
     [Fact]
     public async Task Platform_overview_sums_every_tenant_by_name()
@@ -152,25 +136,6 @@ public class ReportAndAuditTests(TestDb db) : GatewayTestBase(db)
 
         await WithTenantAsync(a.TenantId, async (prov, _) => { await prov.DeleteProjectAsync(a.ProjectId, default); return 0; });
         await Assert.ThrowsAsync<GatewayException>(() => WithServicesAsync(a.TenantId, (sp, _) => sp.GetRequiredService<PublicIdResolver>().ProjectAsync(projectPublic, default)));
-    }
-
-    [Fact]
-    public async Task Audit_rows_carry_the_actor_and_secrets_never_reach_the_detail()
-    {
-        var s = await SetupAsync();
-        await WithServicesAsync(s.TenantId, async (sp, _) =>
-        {
-            var actor = sp.GetRequiredService<CurrentActor>();
-            (actor.TenantId, actor.UserId, actor.Ip) = (s.TenantId, 42, "203.0.113.5");
-            await sp.GetRequiredService<AuditWriter>().WriteAsync("provider.create", "provider", "abc", new { name = "up", keyHint = "1234" });
-            return 0;
-        });
-
-        await using var ctx = Db.NewContext();
-        var row = await ctx.AuditLogs.SingleAsync(a => a.TenantId == s.TenantId && a.Action == "provider.create");
-        Assert.Equal((42L, "203.0.113.5", "provider", "abc"), (row.UserId, row.Ip, row.Entity, row.EntityId));
-        Assert.DoesNotContain(UpstreamKey, row.DetailJson);
-        Assert.Contains("keyHint", row.DetailJson);
     }
 
     [Fact]

@@ -76,8 +76,9 @@ public static class AuthEndpoints
     private static async Task<IResult> RedeemAsync(
         string purpose, string action, RedeemRequest request, AuthService auth, AuditWriter audit, CancellationToken ct)
     {
-        await auth.RedeemTokenAsync(request.Token ?? "", purpose, request.Password ?? "", ct);
-        await audit.WriteAsync(action);
+        var (userId, tenantId) = await auth.RedeemTokenAsync(request.Token ?? "", purpose, request.Password ?? "", ct);
+        // Nilai token tidak pernah dicatat; baris audit menyebut pemilik token supaya bisa ditelusuri per akun.
+        await audit.WriteAsync(action, "user", userId.ToString(), tenantId: tenantId);
         return Results.NoContent();
     }
 

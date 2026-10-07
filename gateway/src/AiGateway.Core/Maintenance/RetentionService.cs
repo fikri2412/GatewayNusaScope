@@ -9,17 +9,22 @@ using Microsoft.Extensions.Options;
 namespace AiGateway.Core.Maintenance;
 
 public sealed record RetentionOutcome(
-    int BodiesDeleted, int DaysReconciled, int LogsDeleted, int DeliveriesDeleted, int JobRunsDeleted);
+    int BodiesDeleted, int DaysReconciled, int LogsDeleted, int DeliveriesDeleted, int JobRunsDeleted,
+    int RefreshTokensDeleted, int UserTokensDeleted);
 
 /// <summary>
 /// Retensi G4. Sebelum usage_logs satu hari dihapus, hari itu direkonsiliasi ulang dari log mentah ke
 /// <c>usage_daily</c> dengan nilai absolut (bukan menambah), jadi total historis tetap utuh walau
 /// pencatatan inline sempat gagal. Rekonsiliasi hanya menyentuh hari yang sudah utuh (sebelum hari cutoff),
-/// lalu seluruh log hari itu dihapus dalam satu perintah — aman diulang bila proses berhenti di tengah.
+/// lalu log hari itu dihapus per batch — aman diulang bila proses berhenti di tengah. Refresh/user token
+/// yang sudah kedaluwarsa lebih dari sepekan juga dipurge di sini.
 /// </summary>
 public sealed class RetentionService(
     GatewayDbContext db, IOptions<MaintenanceOptions> options, TimeProvider clock, ILogger<RetentionService> log)
 {
+    /// <summary>Token kedaluwarsa disimpan sepekan setelah masa berlakunya berakhir (untuk audit singkat), lalu dibuang.</summary>
+    private const int ExpiredTokenRetentionDays = 7;
+
     private const string ReconcileSql = """
         MERGE usage_daily WITH (HOLDLOCK) AS t
         USING (
@@ -61,11 +66,7 @@ public sealed class RetentionService(
         {
             await ReconcileDayAsync(DateOnly.FromDateTime(day), ct);
             reconciled++;
-            var from = day.Date;
-            var to = from.AddDays(1);
-            // ponytail: satu perintah per hari; batching per hari kalau satu hari pernah menembus puluhan juta baris.
-            logs += await db.UsageLogs.IgnoreQueryFilters()
-                .Where(l => l.CreatedAt >= from && l.CreatedAt < to).ExecuteDeleteAsync(ct);
+            logs += await DeleteUsageLogsAsync(day.Date, day.Date.AddDays(1), o.RetentionBatchSize, ct);
         }
 
         var deliveries = await db.Set<WebhookDelivery>().IgnoreQueryFilters()
@@ -74,10 +75,16 @@ public sealed class RetentionService(
         var jobRuns = await db.Set<JobRun>()
             .Where(j => j.StartedAt < now.AddDays(-o.JobRunRetentionDays)).ExecuteDeleteAsync(ct);
 
-        if (bodies + logs + deliveries + jobRuns > 0 || reconciled > 0)
-            log.LogInformation("Retensi: bodies={Bodies} hari={Days} logs={Logs} deliveries={Deliveries} jobRuns={JobRuns}",
-                bodies, reconciled, logs, deliveries, jobRuns);
-        return new RetentionOutcome(bodies, reconciled, logs, deliveries, jobRuns);
+        // Token kedaluwarsa: refresh_tokens/user_tokens di luar RLS, dibuang setelah masa berlakunya lewat sepekan.
+        var tokenCutoff = now.AddDays(-ExpiredTokenRetentionDays);
+        var refreshTokens = await db.RefreshTokens.Where(t => t.ExpiresAt < tokenCutoff).ExecuteDeleteAsync(ct);
+        var userTokens = await db.UserTokens.Where(t => t.ExpiresAt < tokenCutoff).ExecuteDeleteAsync(ct);
+
+        if (bodies + logs + deliveries + jobRuns + refreshTokens + userTokens > 0 || reconciled > 0)
+            log.LogInformation(
+                "Retensi: bodies={Bodies} hari={Days} logs={Logs} deliveries={Deliveries} jobRuns={JobRuns} refreshTokens={RefreshTokens} userTokens={UserTokens}",
+                bodies, reconciled, logs, deliveries, jobRuns, refreshTokens, userTokens);
+        return new RetentionOutcome(bodies, reconciled, logs, deliveries, jobRuns, refreshTokens, userTokens);
     }
 
     private async Task<int> DeleteBodiesAsync(DateTime now, int batch, CancellationToken ct)
@@ -88,6 +95,24 @@ public sealed class RetentionService(
             var n = await db.Database.ExecuteSqlRawAsync(
                 "DELETE TOP (@batch) FROM request_bodies WHERE expires_at <= @now",
                 new object[] { new SqlParameter("@batch", batch), new SqlParameter("@now", now) }, ct);
+            deleted += n;
+            if (n < batch) return deleted;
+        }
+    }
+
+    private async Task<int> DeleteUsageLogsAsync(DateTime from, DateTime to, int batch, CancellationToken ct)
+    {
+        var deleted = 0;
+        while (true)
+        {
+            var n = await db.Database.ExecuteSqlRawAsync(
+                "DELETE TOP (@batch) FROM usage_logs WHERE created_at >= @from AND created_at < @to",
+                new object[]
+                {
+                    new SqlParameter("@batch", batch),
+                    new SqlParameter("@from", SqlDbType.DateTime2) { Value = from },
+                    new SqlParameter("@to", SqlDbType.DateTime2) { Value = to },
+                }, ct);
             deleted += n;
             if (n < batch) return deleted;
         }

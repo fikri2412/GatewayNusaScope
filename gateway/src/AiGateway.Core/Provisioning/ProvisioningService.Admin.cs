@@ -74,10 +74,7 @@ public sealed partial class ProvisioningService
     public async Task<Model> UpdateModelAsync(long id, ModelPatch patch, CancellationToken ct)
     {
         var m = await db.Models.FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw GatewayException.NotFound("Model");
-        if (patch.Description is not null)
-            m.Description = patch.Description.Length > 500
-                ? throw GatewayException.BadRequest("invalid_description", "Deskripsi maksimal 500 karakter.")
-                : patch.Description.Length == 0 ? null : patch.Description;
+        if (patch.Description is not null) m.Description = ValidateDescription(patch.Description);
         if (patch.ClearMaxOutputTokens) m.MaxOutputTokens = null;
         else if (patch.MaxOutputTokens is { } max)
             m.MaxOutputTokens = max > 0 ? max : throw GatewayException.BadRequest("invalid_max_output", "max_output_tokens harus > 0.");
@@ -103,13 +100,7 @@ public sealed partial class ProvisioningService
     public async Task AddPriceSetAsync(long modelId, PriceSet price, CancellationToken ct)
     {
         if (!await db.Models.AnyAsync(m => m.Id == modelId, ct)) throw GatewayException.NotFound("Model");
-        if (price.Input < 0 || price.Output < 0 || price.CacheRead < 0 || price.CacheWrite < 0
-            || (price.Tiers ?? []).Any(t => t.MinInputTokens < 1 || t.Input < 0 || t.Output < 0))
-            throw GatewayException.BadRequest("invalid_price", "Harga tidak boleh negatif dan tier harus mulai dari >= 1 token.");
-        if (price.Currency is not { Length: 3 } || !price.Currency.All(char.IsAsciiLetterUpper))
-            throw GatewayException.BadRequest("invalid_currency", "Mata uang harus kode 3 huruf kapital (mis. USD).");
-        if ((price.Tiers ?? []).GroupBy(t => t.MinInputTokens).Any(g => g.Count() > 1))
-            throw GatewayException.BadRequest("invalid_price", "Tier tidak boleh punya ambang yang sama.");
+        ValidatePrices(price.Input, price.Output, price.CacheRead, price.CacheWrite, price.Currency, price.Tiers);
 
         var effective = DateTime.UtcNow;
         db.ModelPrices.Add(new ModelPrice
@@ -145,8 +136,7 @@ public sealed partial class ProvisioningService
                 ? patch.Status : throw GatewayException.BadRequest("invalid_status", "status harus active atau suspended.");
         if (patch.LogContent is not null) p.LogContent = patch.LogContent.Value;
         if (patch.ClearRetention) p.ContentRetentionDays = null;
-        else if (patch.ContentRetentionDays is { } days)
-            p.ContentRetentionDays = days is >= 1 and <= 3650 ? days : throw GatewayException.BadRequest("invalid_retention", "Masa simpan 1-3650 hari.");
+        else if (patch.ContentRetentionDays is { } days) p.ContentRetentionDays = ValidateRetention(days);
         await SaveConcurrentAsync("Nama project sudah dipakai.", ct);
         return p;
     }
@@ -181,7 +171,10 @@ public sealed partial class ProvisioningService
         }
         if (patch.ClearExpiry) k.ExpiresAt = null;
         else if (patch.ExpiresAt is { } expires)
+        {
+            expires = ToUtc(expires);
             k.ExpiresAt = expires > DateTime.UtcNow ? expires : throw GatewayException.BadRequest("invalid_expiry", "Tanggal kedaluwarsa harus di masa depan.");
+        }
         await db.SaveChangesAsync(ct);
         return k;
     }

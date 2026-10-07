@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using AiGateway.Core.Data;
@@ -12,8 +13,9 @@ public sealed record DeliveryOutcome(int Sent, int Retried, int Failed);
 
 /// <summary>
 /// Kirim antrean <c>webhook_deliveries</c> yang jatuh tempo: POST payload JSON, tanda tangan HMAC-SHA256
-/// di header <c>X-Gateway-Signature</c>, timeout, dan backoff eksponensial sampai percobaan habis.
-/// URL wajib https dan hanya boleh keluar lewat klien bernama <see cref="HttpClientName"/> (handler anti-SSRF).
+/// dari <c>"{X-Gateway-Timestamp}.{payload}"</c> di header <c>X-Gateway-Signature</c>, timeout, dan backoff
+/// eksponensial sampai percobaan habis. URL wajib https dan hanya boleh keluar lewat klien bernama
+/// <see cref="HttpClientName"/> (handler anti-SSRF).
 /// </summary>
 public sealed class WebhookDeliveryService(
     GatewayDbContext db, IHttpClientFactory httpFactory, WebhookSecretProtector protector,
@@ -25,6 +27,8 @@ public sealed class WebhookDeliveryService(
     {
         var o = options.Value;
         var now = clock.GetUtcNow().UtcDateTime;
+        // ponytail: asumsi satu instance — dua instance memilih baris pending yang sama dan mengirimnya dua kali
+        // (tidak ada klaim/lease). Jalur upgrade: klaim atomik UPDATE TOP (@n) ... SET status='sending' OUTPUT inserted.*.
         var due = await db.Set<WebhookDelivery>().IgnoreQueryFilters()
             .Where(d => d.Status == DeliveryStatuses.Pending && d.NextAttemptAt <= now)
             .OrderBy(d => d.NextAttemptAt).Take(o.DeliveryBatchSize).ToListAsync(ct);
@@ -80,6 +84,7 @@ public sealed class WebhookDeliveryService(
             return (false, null, "URL webhook bukan https yang valid.", false);
 
         var payload = delivery.PayloadJson ?? "{}";
+        var timestamp = clock.GetUtcNow().ToUnixTimeSeconds();
         try
         {
             var secret = protector.Unprotect(webhook.TenantId, webhook.SigningSecretEncrypted);
@@ -87,7 +92,8 @@ public sealed class WebhookDeliveryService(
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
-            request.Headers.TryAddWithoutValidation("X-Gateway-Signature", "sha256=" + Signature(secret, payload));
+            request.Headers.TryAddWithoutValidation("X-Gateway-Timestamp", timestamp.ToString(CultureInfo.InvariantCulture));
+            request.Headers.TryAddWithoutValidation("X-Gateway-Signature", "sha256=" + Signature(secret, timestamp, payload));
             request.Headers.TryAddWithoutValidation("X-Gateway-Event", "quota_threshold");
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -108,9 +114,13 @@ public sealed class WebhookDeliveryService(
         }
     }
 
-    /// <summary>Tanda tangan hex huruf kecil dari HMAC-SHA256(secret, payload) untuk verifikasi penerima.</summary>
-    public static string Signature(string secret, string payload) =>
-        Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(payload)));
+    /// <summary>
+    /// Tanda tangan hex huruf kecil dari HMAC-SHA256(secret, "{timestamp}.{payload}"). Timestamp (unix detik)
+    /// ikut ditandatangani dan dikirim di header <c>X-Gateway-Timestamp</c> supaya penerima bisa menolak replay.
+    /// </summary>
+    public static string Signature(string secret, long timestamp, string payload) =>
+        Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret),
+            Encoding.UTF8.GetBytes($"{timestamp.ToString(CultureInfo.InvariantCulture)}.{payload}")));
 
     private static double Backoff(MaintenanceOptions o, int attempts) =>
         Math.Min(o.WebhookBackoffMaxSeconds, o.WebhookBackoffBaseSeconds * Math.Pow(2, Math.Min(attempts - 1, 20)));

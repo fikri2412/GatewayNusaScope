@@ -18,7 +18,7 @@ public sealed class MaintenanceOptions
     [Range(1, 3650)] public int UsageLogRetentionDays { get; set; } = 90;
     [Range(1, 3650)] public int JobRunRetentionDays { get; set; } = 30;
     [Range(1, 365)] public int DeliveryRetentionDays { get; set; } = 14;
-    /// <summary>Jumlah baris request_bodies yang dihapus per perintah.</summary>
+    /// <summary>Jumlah baris request_bodies dan usage_logs yang dihapus per perintah.</summary>
     [Range(100, 100_000)] public int RetentionBatchSize { get; set; } = 5000;
     /// <summary>Jumlah hari usage_logs yang direkonsiliasi dan dihapus per siklus retensi.</summary>
     [Range(1, 366)] public int RetentionMaxDaysPerRun { get; set; } = 7;
@@ -33,8 +33,12 @@ public sealed class MaintenanceOptions
     [Range(1, 604_800)] public int WebhookBackoffMaxSeconds { get; set; } = 3600;
     /// <summary>Batas karakter yang disimpan per request/response body (null tidak diisi).</summary>
     [Range(1000, 5_000_000)] public int MaxBodyCharacters { get; set; } = 200_000;
-    /// <summary>Batas waktu penyimpanan body; token terpisah dari request agar tidak ikut batal saat klien putus.</summary>
-    [Range(1, 60)] public int RecordTimeoutSeconds { get; set; } = 10;
+    /// <summary>
+    /// Batas waktu penyimpanan body (token terpisah dari request agar tidak ikut batal saat klien putus).
+    /// Penulisan ditunggu sebelum respons dikirim, jadi nilai ini menambah latensi respons bila database lambat;
+    /// dijaga kecil supaya penambahan itu terbatas.
+    /// </summary>
+    [Range(1, 60)] public int RecordTimeoutSeconds { get; set; } = 2;
 }
 
 public static class MaintenanceServiceCollectionExtensions

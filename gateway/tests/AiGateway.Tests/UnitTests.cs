@@ -43,6 +43,10 @@ public class IpAllowListTests
     [InlineData("""["10.0.0.0/8"]""", "11.0.0.1", false)]
     [InlineData("""["2001:db8::/32"]""", "2001:db8::1", true)]
     [InlineData("""["198.51.100.1"]""", "::ffff:198.51.100.1", true)] // IPv4 yang dipetakan ke IPv6
+    [InlineData("""["::ffff:198.51.100.1"]""", "198.51.100.1", true)] // entri IPv4-mapped, klien IPv4
+    [InlineData("""["::ffff:198.51.100.1"]""", "::ffff:198.51.100.1", true)] // kedua sisi IPv4-mapped
+    [InlineData("""["::ffff:198.51.100.0/120"]""", "198.51.100.1", true)] // CIDR IPv4-mapped
+    [InlineData("""["::ffff:198.51.100.0/120"]""", "198.51.101.1", false)]
     [InlineData("{broken", "198.51.100.1", false)] // JSON rusak ditolak (fail closed)
     public void Matches_exact_addresses_and_cidr_ranges(string? json, string ip, bool expected) =>
         Assert.Equal(expected, IpAllowList.IsAllowed(json, IPAddress.Parse(ip)));
@@ -111,5 +115,34 @@ public class RoutingAndPricingTests
         Assert.Equal(4m, Pricing.Pick(prices, now, 200_001)!.InputPricePer1M);
         Assert.Equal(1m, Pricing.Pick(prices, now.AddDays(-10), 5)!.InputPricePer1M);
         Assert.Null(Pricing.Pick(prices, now.AddDays(-60), 5));
+    }
+}
+
+public class TenantConcurrencyGateTests
+{
+    [Fact]
+    public void Slots_are_per_tenant_and_denied_until_released()
+    {
+        var gate = new TenantConcurrencyGate();
+
+        Assert.True(gate.TryAcquire(7, 1));
+        Assert.False(gate.TryAcquire(7, 1)); // tenant 7 penuh
+        Assert.True(gate.TryAcquire(8, 1));  // tenant lain tidak ikut penuh
+
+        gate.Release(7);
+        Assert.True(gate.TryAcquire(7, 1));
+        gate.Release(7);
+        gate.Release(8);
+    }
+
+    [Fact]
+    public void Releasing_without_a_slot_does_not_grant_extra_room()
+    {
+        var gate = new TenantConcurrencyGate();
+
+        gate.Release(99);
+
+        Assert.True(gate.TryAcquire(99, 1));
+        Assert.False(gate.TryAcquire(99, 1));
     }
 }

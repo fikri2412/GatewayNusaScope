@@ -38,6 +38,15 @@ public sealed class ProxyOptions
     public const string Section = "Proxy";
     [Range(1024, 64 * 1024 * 1024)] public int MaxRequestBytes { get; set; } = 4 * 1024 * 1024;
     [Range(1, 600)] public int UpstreamTimeoutSeconds { get; set; } = 120;
+    /// <summary>
+    /// Batas durasi total satu stream SSE. Batas diam antar baris memakai <see cref="UpstreamTimeoutSeconds"/>; batas
+    /// total mencegah upstream yang mengirim sepotong demi sepotong menahan koneksi dan slot tenant tanpa akhir.
+    /// </summary>
+    [Range(1, 86400)] public int MaxStreamSeconds { get; set; } = 900;
+    /// <summary>Batas body respons upstream (provider milik tenant tidak dipercaya; tanpa batas, satu tenant bisa menghabiskan memori proses).</summary>
+    [Range(1024, 256 * 1024 * 1024)] public int MaxResponseBytes { get; set; } = 8 * 1024 * 1024;
+    /// <summary>Permintaan chat yang boleh berjalan bersamaan per tenant; sisanya ditolak 429.</summary>
+    [Range(1, 10_000)] public int MaxConcurrentPerTenant { get; set; } = 64;
 }
 
 /// <summary>Kebijakan login admin: kunci akun sementara, umur sesi, panjang password.</summary>
@@ -97,6 +106,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<ProvisioningService>();
         services.AddScoped<PolicyEngine>();
         services.AddSingleton<RequestRateLimiter>();
+        services.AddSingleton<TenantConcurrencyGate>();
         services.AddOutboundSecurity(config);
         services.AddScoped<PlatformService>();
         services.TryAddSingleton(TimeProvider.System);

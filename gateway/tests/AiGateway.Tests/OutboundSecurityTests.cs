@@ -10,6 +10,21 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AiGateway.Tests;
 
+/// <summary>
+/// Fact yang ditandai skip (bukan lulus diam-diam) bila <c>GATEWAY_NETWORK_SMOKE</c> != 1.
+/// xUnit 2.9 belum punya Assert.Skip, jadi gate dipasang di atribut.
+/// </summary>
+public sealed class NetworkSmokeFactAttribute : FactAttribute
+{
+    public const string EnvVar = "GATEWAY_NETWORK_SMOKE";
+
+    public NetworkSmokeFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable(EnvVar) != "1")
+            Skip = $"Uji jaringan nyata dilewati; set {EnvVar}=1 untuk menjalankannya.";
+    }
+}
+
 public class OutboundSecurityTests
 {
     private static OutboundSecurityPolicy Policy(params string[] allowed) =>
@@ -34,10 +49,14 @@ public class OutboundSecurityTests
     [InlineData("192.168.0.0", false)] [InlineData("192.168.255.255", false)] [InlineData("192.169.0.0", true)]
     [InlineData("198.51.100.1", false)] [InlineData("198.51.99.255", true)] [InlineData("203.0.113.1", false)] [InlineData("203.0.114.1", true)]
     [InlineData("224.0.0.1", false)] [InlineData("223.255.255.255", true)] [InlineData("255.255.255.255", false)]
+    [InlineData("192.88.99.1", false)] [InlineData("192.88.98.1", true)] [InlineData("192.88.100.1", true)] // 6to4 relay anycast
     [InlineData("8.8.8.8", true)] [InlineData("1.1.1.1", true)]
     [InlineData("::", false)] [InlineData("::1", false)] [InlineData("::7f00:1", false)] // ::7f00:1 = 127.0.0.1 versi IPv4-compatible
     [InlineData("fe80::1", false)] [InlineData("fec0::1", false)] [InlineData("fc00::1", false)] [InlineData("fdff::1", false)] [InlineData("fbff::1", true)]
     [InlineData("ff02::1", false)] [InlineData("100::1", false)] [InlineData("2001:db8::1", false)] [InlineData("2001:4860:4860::8888", true)]
+    [InlineData("2001::1", false)] [InlineData("2001:1ff:ffff::1", false)] [InlineData("2001:200::1", true)] // penugasan protokol IETF (2001::/23)
+    [InlineData("2001:0:4136:e378:8000:63bf:3fff:fdd2", false)] // Teredo (di dalam 2001::/23)
+    [InlineData("2002:7f00:1::", false)] [InlineData("2003::1", true)] // 6to4 menyematkan 127.0.0.1
     [InlineData("64:ff9b::7f00:1", false)] // NAT64 menuju 127.0.0.1
     [InlineData("::ffff:127.0.0.1", false)] [InlineData("::ffff:10.0.0.1", false)] [InlineData("::ffff:8.8.8.8", true)]
     public void Address_ranges_are_enforced_at_their_boundaries(string ip, bool allowed) =>
@@ -120,6 +139,8 @@ public class OutboundSecurityTests
         Assert.False(handler.AllowAutoRedirect);
         Assert.False(handler.UseProxy);
         Assert.NotNull(handler.ConnectCallback);
+        Assert.Equal(100, handler.MaxConnectionsPerServer); // batas socket keluar per handler
+        Assert.Equal(TimeSpan.FromSeconds(10), handler.ConnectTimeout); // connect menggantung tidak menunggu timeout 120 s
     }
 
     [Fact]
@@ -132,14 +153,12 @@ public class OutboundSecurityTests
     }
 
     /// <summary>
-    /// Uji jaringan sungguhan (bukan mock). Jalankan dengan GATEWAY_NETWORK_SMOKE=1:
-    /// <c>dotnet test --filter Network_smoke</c>. Lewati bila variabel tidak diset.
+    /// Uji jaringan sungguhan (bukan mock); ditandai skip kecuali GATEWAY_NETWORK_SMOKE=1:
+    /// <c>dotnet test --filter Network_smoke</c>.
     /// </summary>
-    [Fact]
+    [NetworkSmokeFact]
     public async Task Network_smoke_real_dns_tls_and_socket()
     {
-        if (Environment.GetEnvironmentVariable("GATEWAY_NETWORK_SMOKE") != "1") return;
-
         // 1) Publik sungguhan: DNS + TLS + validasi sertifikat.
         using (var sp = BuildProvider())
         using (var client = new HttpClient(OutboundSecurity.CreateHandler(sp)))

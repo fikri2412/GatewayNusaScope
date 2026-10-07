@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
@@ -145,7 +146,8 @@ public class ProxyTests(TestDb db) : GatewayTestBase(db)
     [InlineData("""{"messages":[{"role":"user","content":"x"}]}""", "missing_model")]
     [InlineData("""{"model":"gpt-test"}""", "missing_messages")]
     [InlineData("""{"model":"gpt-test","messages":[]}""", "missing_messages")]
-    [InlineData("""{"model":"gpt-test","messages":[{"role":"user","content":"x"}],"stream":true}""", "streaming_not_supported")]
+    [InlineData("""{"model":"gpt-test","messages":[{"role":"user","content":"x"}],"stream":1}""", "invalid_stream")]
+    [InlineData("""{"model":"gpt-test","messages":[{"role":"user","content":"x"}],"stream":"true"}""", "invalid_stream")]
     public async Task Invalid_requests_are_rejected_before_reaching_upstream(string body, string code)
     {
         var s = await SetupAsync();
@@ -252,6 +254,24 @@ public class ProxyTests(TestDb db) : GatewayTestBase(db)
     }
 
     [Fact]
+    public async Task Provider_with_a_non_https_base_url_is_never_called()
+    {
+        var s = await SetupAsync();
+        await WithTenantAsync(s.TenantId, async (_, db) =>
+        {
+            await db.Providers.Where(p => p.Id == s.ProviderId)
+                .ExecuteUpdateAsync(u => u.SetProperty(p => p.BaseUrl, "http://up-insecure.test/v1"));
+            return 0;
+        });
+
+        var response = await PostChatAsync(s.ApiKey, Chat());
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("provider_misconfigured", ErrorCode(await BodyAsync(response)));
+        Assert.Empty(Upstream.Requests);
+    }
+
+    [Fact]
     public async Task Invalid_or_unreachable_upstream_is_a_bad_gateway()
     {
         var s = await SetupAsync();
@@ -323,5 +343,139 @@ public class ProxyTests(TestDb db) : GatewayTestBase(db)
         await using var ctx = Db.NewContext(s.TenantId);
         Assert.Equal(1, await ctx.ProviderCredentials.CountAsync(c => c.Status == CredentialStatuses.Active));
         Assert.Equal(1, await ctx.ProviderCredentials.CountAsync(c => c.Status == CredentialStatuses.Disabled));
+    }
+
+    [Theory]
+    [InlineData("\"5000\"")]            // string: upstream tertentu menerima angka sebagai string
+    [InlineData("5000.5")]              // pecahan
+    [InlineData("9300000000000000000")] // di luar jangkauan long
+    [InlineData("-5")]
+    [InlineData("0")]
+    public async Task Token_limits_that_are_not_positive_integers_are_clamped_to_the_model_limit(string raw)
+    {
+        var s = await SetupAsync(maxOutput: 1000);
+
+        await PostChatAsync(s.ApiKey, Chat(extra: $",\"max_tokens\":{raw}"));
+
+        Assert.Equal(1000, (int?)JsonNode.Parse(Upstream.Requests.Single().Body)!["max_tokens"]);
+    }
+
+    [Fact]
+    public async Task Stream_false_and_null_are_forwarded_but_other_shapes_are_not()
+    {
+        var s = await SetupAsync();
+
+        foreach (var raw in new[] { "\"false\"", "0", "{}" })
+        {
+            var denied = await PostChatAsync(s.ApiKey, Chat(extra: $",\"stream\":{raw}"));
+            Assert.Equal(HttpStatusCode.BadRequest, denied.StatusCode);
+            Assert.Equal("invalid_stream", ErrorCode(await BodyAsync(denied)));
+        }
+        Assert.Empty(Upstream.Requests);
+
+        Assert.Equal(HttpStatusCode.OK, (await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":false"))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":null"))).StatusCode);
+        Assert.Equal(2, Upstream.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Non_json_upstream_error_bodies_are_replaced_with_a_gateway_error()
+    {
+        var s = await SetupAsync();
+        Upstream.Respond = _ => FakeUpstream.Json(400, "<html><body>nginx: request rejected</body></html>");
+
+        var response = await PostChatAsync(s.ApiKey, Chat());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var text = await response.Content.ReadAsStringAsync();
+        Assert.Equal("upstream_error", (string?)JsonNode.Parse(text)!["error"]!["code"]);
+        Assert.DoesNotContain("nginx", text);
+    }
+
+    [Fact]
+    public async Task Oversized_upstream_responses_are_rejected_as_bad_gateway()
+    {
+        var s = await SetupAsync();
+        using var factory = Factory.WithWebHostBuilder(b => b.UseSetting("Proxy:MaxResponseBytes", "1024"));
+        using var client = factory.CreateClient();
+        Upstream.Respond = _ => FakeUpstream.Json(200, "{\"pad\":\"" + new string('x', 4096) + "\"}");
+
+        var response = await PostChatWithAsync(client, s.ApiKey, Chat());
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("upstream_response_too_large", ErrorCode(await BodyAsync(response)));
+        await using var ctx = Db.NewContext(s.TenantId);
+        var log = await ctx.UsageLogs.SingleAsync();
+        Assert.Equal((UsageStatuses.Error, 1, 502), (log.Status, log.Attempts, log.HttpStatus));
+    }
+
+    [Fact]
+    public async Task Concurrent_requests_above_the_tenant_limit_are_denied_with_429()
+    {
+        var s = await SetupAsync();
+        using var factory = Factory.WithWebHostBuilder(b => b.UseSetting("Proxy:MaxConcurrentPerTenant", "1"));
+        using var client = factory.CreateClient();
+
+        var locked = 0;
+        var entered = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        Upstream.Respond = _ =>
+        {
+            // Hanya permintaan pertama yang ditahan; permintaan lain lewat supaya kegagalan tidak menggantung.
+            if (Interlocked.Exchange(ref locked, 1) == 0)
+            {
+                entered.TrySetResult();
+                release.Task.GetAwaiter().GetResult();
+            }
+            return FakeUpstream.Json(200, FakeUpstream.OkBody);
+        };
+
+        var first = PostChatWithAsync(client, s.ApiKey, Chat());
+        HttpResponseMessage second;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); // permintaan pertama memegang slot dan menunggu upstream
+            second = await PostChatWithAsync(client, s.ApiKey, Chat());
+        }
+        catch { release.TrySetResult(); throw; }
+        release.TrySetResult();
+
+        Assert.Equal(HttpStatusCode.OK, (await first).StatusCode);
+        Assert.Equal((HttpStatusCode)429, second.StatusCode);
+        Assert.Equal("concurrency_limit_exceeded", ErrorCode(await BodyAsync(second)));
+        Assert.Equal(TimeSpan.FromSeconds(1), second.Headers.RetryAfter?.Delta);
+
+        await using (var ctx = Db.NewContext(s.TenantId))
+        {
+            var denied = await ctx.UsageLogs.SingleAsync(l => l.Status == UsageStatuses.Denied);
+            Assert.Equal(("concurrency_limit_exceeded", 429), (denied.DeniedReason, denied.HttpStatus));
+            Assert.Equal(1L, (await ctx.UsageDailies.SingleAsync()).Denied);
+        }
+
+        Assert.Equal(HttpStatusCode.OK, (await PostChatWithAsync(client, s.ApiKey, Chat())).StatusCode); // slot sudah dilepas
+    }
+
+    [Fact]
+    public async Task Parallel_calls_add_one_usage_daily_row_per_request()
+    {
+        var s = await SetupAsync();
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => PostChatAsync(s.ApiKey, Chat())));
+
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.Equal(8, await ctx.UsageLogs.CountAsync());
+        var daily = await ctx.UsageDailies.SingleAsync();
+        Assert.Equal((8L, 0L, 0L, 80L, 160L), (daily.Requests, daily.Denied, daily.Errors, daily.InputTokens, daily.OutputTokens));
+    }
+
+    private static async Task<HttpResponseMessage> PostChatWithAsync(HttpClient client, string? apiKey, string json)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        if (apiKey is not null) request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
+        return await client.SendAsync(request);
     }
 }
