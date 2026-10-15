@@ -82,3 +82,10 @@
 .canvas-sheet { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .canvas-sheet-grid { position: relative; flex: 1; min-height: 320px; }
 .canvas-sheet-grid > .fortune-container { position: absolute; inset: 0; }
+
+/* Toolbar AI untuk teks terpilih. */
+.canvas-ai-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 10px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }
+.canvas-ai-bar .ghost-button { height: 30px; padding: 0 10px; font-size: var(--ns-text-base-sm); }
+.canvas-ai-bar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-ai-ask { display: flex; align-items: center; gap: 6px; flex: 1 1 220px; }
+.canvas-ai-ask input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); font-family: inherit; font-size: var(--ns-text-base-sm); }

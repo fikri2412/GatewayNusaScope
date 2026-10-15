@@ -4,7 +4,8 @@ import { Highlight, themes } from 'prism-react-renderer'
 import { createArtifact, deleteArtifact, getArtifact, getArtifactVersion, listArtifactVersions, restoreArtifact, saveArtifact } from '../api/artifacts'
 import { ApiError, errorMessage } from '../api/client'
 import type { ArtifactDto, ArtifactKind, ArtifactSummary, ArtifactVersionContent, ArtifactVersionInfo } from '../api/types'
-import { CODE_LANGUAGES, DIAGRAM_STARTER, artifactFileName, changedLines, kindLabel, sourceLabel } from '../canvas'
+import { CODE_LANGUAGES, DIAGRAM_STARTER, MAX_SELECTION_CHARS, SELECTION_ACTIONS, artifactFileName, buildSelectionPrompt, changedLines, kindLabel, sourceLabel } from '../canvas'
+import type { SelectionAction } from '../canvas'
 import { DiagramView } from './DiagramView'
 import { SandboxPreview } from './SandboxPreview'
 import { SpreadsheetView } from './SpreadsheetView'
@@ -30,7 +31,7 @@ function downloadArtifact(name: string, text: string, kind: ArtifactKind) {
 }
 
 /** Penomoran baris untuk editor kode; digulir bersama textarea lewat ref, tanpa state per scroll. */
-function CodeTextarea({ value, onChange, label }: { value: string; onChange: (next: string) => void; label: string }) {
+function CodeTextarea({ value, onChange, onSelectionChange, label }: { value: string; onChange: (next: string) => void; onSelectionChange?: (start: number, end: number) => void; label: string }) {
   const gutter = useRef<HTMLPreElement>(null)
   const count = value === '' ? 1 : value.split('\n').length
   const numbers = useMemo(() => Array.from({ length: count }, (_, i) => i + 1).join('\n'), [count])
@@ -44,6 +45,7 @@ function CodeTextarea({ value, onChange, label }: { value: string; onChange: (ne
         spellCheck={false}
         wrap="off"
         onChange={(e) => onChange(e.target.value)}
+        onSelect={(e) => onSelectionChange?.(e.currentTarget.selectionStart, e.currentTarget.selectionEnd)}
         onScroll={(e) => {
           if (gutter.current) gutter.current.scrollTop = e.currentTarget.scrollTop
         }}
@@ -76,13 +78,16 @@ type EditorProps = {
   onChanged: () => Promise<void>
   onDeleted: (id: string) => void
   onDirtyChange: (id: string, dirty: boolean) => void
+  /** Kirim pesan ke AI lewat chat percakapan ini (toolbar teks terpilih). */
+  onAskAi: (prompt: string) => Promise<void>
+  aiBusy: boolean
 }
 
 /**
  * Satu artifact: edit, simpan (versi baru dari versi dasar yang dilihat), urungkan, riwayat, salin, unduh.
  * Tetap terpasang saat tab lain aktif supaya draf yang belum disimpan tidak hilang.
  */
-function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }: EditorProps) {
+function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, onAskAi, aiBusy }: EditorProps) {
   const [loaded, setLoaded] = useState<ArtifactDto | null>(null)
   const [draft, setDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState(summary.title)
@@ -96,6 +101,10 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   const [conflict, setConflict] = useState(false)
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [selection, setSelection] = useState<{ start: number; end: number } | null>(null)
+  const [asking, setAsking] = useState<SelectionAction | null>(null)
+  const [question, setQuestion] = useState('')
+  const [aiNote, setAiNote] = useState<string | null>(null)
 
   const dirty = loaded !== null && (draft !== loaded.content || titleDraft.trim() !== loaded.title)
   useEffect(() => onDirtyChange(summary.id, dirty), [onDirtyChange, summary.id, dirty])
@@ -229,6 +238,32 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       await onChanged()
     })
 
+  const selectionActions = SELECTION_ACTIONS[summary.kind] ?? []
+  const selectedText = selection && selection.end > selection.start ? draft.slice(selection.start, selection.end) : ''
+
+  const askAi = async (action: SelectionAction) => {
+    if (!loaded || selectedText === '') return
+    if (action.needsQuestion && asking?.key !== action.key) {
+      setAsking(action)
+      return
+    }
+    if (action.needsQuestion && question.trim() === '') return
+    setBusy(true)
+    setError(null)
+    setAiNote(null)
+    try {
+      await onAskAi(buildSelectionPrompt({ action, title: loaded.title, artifactId: summary.id, version: loaded.currentVersion, text: selectedText, question }))
+      setAiNote(action.edits ? 'Permintaan dikirim ke chat. Hasilnya muncul sebagai versi baru setelah AI selesai.' : 'Permintaan dikirim ke chat. Jawabannya muncul di chat.')
+      setAsking(null)
+      setQuestion('')
+      setSelection(null)
+    } catch (e: unknown) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onKeyDown = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault()
@@ -300,6 +335,27 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       </div>
 
       {error && <p className="error canvas-note" role="alert">{error}</p>}
+      {selectionActions.length > 0 && mode === 'edit' && viewing === null && selectedText !== '' && (
+        <div className="canvas-note canvas-ai-bar" role="group" aria-label="Aksi AI untuk teks terpilih">
+          <span className="muted">Terpilih {selectedText.length.toLocaleString('id-ID')} karakter</span>
+          {selectionActions.map((a) => (
+            <button key={a.key} type="button" className="ghost-button" onClick={() => void askAi(a)}
+              disabled={busy || aiBusy || dirty || selectedText.length > MAX_SELECTION_CHARS}
+              title={dirty ? 'Simpan dulu supaya AI membaca isi yang sama denganmu' : aiBusy ? 'AI sedang menjawab di chat' : undefined}>
+              {a.label}
+            </button>
+          ))}
+          {asking && (
+            <form className="canvas-ai-ask" onSubmit={(e) => { e.preventDefault(); void askAi(asking) }}>
+              <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Tulis pertanyaanmu" aria-label="Pertanyaan untuk AI" maxLength={500} />
+              <button type="submit" className="ghost-button" disabled={busy || aiBusy || question.trim() === ''}>Kirim</button>
+            </form>
+          )}
+          {selectedText.length > MAX_SELECTION_CHARS && <span className="error">Pilihan terlalu panjang (maksimal {MAX_SELECTION_CHARS.toLocaleString('id-ID')} karakter).</span>}
+          {dirty && <span className="muted">Simpan dulu agar AI membaca isi yang sama.</span>}
+        </div>
+      )}
+      {aiNote && <p className="canvas-note muted" role="status">{aiNote}</p>}
       {conflict && (
         <div className="canvas-note canvas-conflict" role="alert">
           <span>Artifact sudah berubah di tempat lain (mis. diperbarui AI). Penyimpananmu ditolak agar tidak menimpa.</span>
@@ -349,9 +405,9 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
           isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
             : isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
         ) : isCode || isDiagram ? (
-          <CodeTextarea value={draft} onChange={setDraft} label={isDiagram ? 'Kode Mermaid' : `Kode ${language}`} />
+          <CodeTextarea value={draft} onChange={setDraft} onSelectionChange={(start, end) => setSelection({ start, end })} label={isDiagram ? 'Kode Mermaid' : `Kode ${language}`} />
         ) : (
-          <textarea className="canvas-text" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Isi dokumen (Markdown)" spellCheck />
+          <textarea className="canvas-text" value={draft} onChange={(e) => setDraft(e.target.value)} onSelect={(e) => setSelection({ start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd })} aria-label="Isi dokumen (Markdown)" spellCheck />
         )}
       </div>
 
@@ -380,13 +436,17 @@ type CanvasPanelProps = {
   onClose: () => void
   /** Muat ulang daftar artifact (setelah buat/simpan/hapus). */
   onChanged: () => Promise<void>
+  /** Kirim pesan ke AI lewat chat percakapan ini; ditolak (melempar) bila belum ada model atau pengiriman gagal. */
+  onAskAi: (prompt: string) => Promise<void>
+  /** Ada giliran AI utama yang berjalan: aksi AI ditahan dulu. */
+  aiBusy: boolean
 }
 
 /**
  * Panel Canvas di samping chat. Tetap terpasang saat disembunyikan (`open=false`) supaya draf yang belum disimpan
  * tidak hilang; peringatan keluar halaman aktif selama ada draf kotor.
  */
-export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelect, onClose, onChanged }: CanvasPanelProps) {
+export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelect, onClose, onChanged, onAskAi, aiBusy }: CanvasPanelProps) {
   const [visited, setVisited] = useState<ReadonlySet<string>>(new Set())
   const [dirtyIds, setDirtyIds] = useState<ReadonlySet<string>>(new Set())
   const [language, setLanguage] = useState<string>('text')
@@ -494,6 +554,8 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
           onChanged={onChanged}
           onDeleted={onDeleted}
           onDirtyChange={onDirtyChange}
+          onAskAi={onAskAi}
+          aiBusy={aiBusy}
         />
       ))}
     </aside>

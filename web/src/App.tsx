@@ -151,6 +151,13 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
         onSelect={setActiveArtifactId}
         onClose={() => setCanvasOpen(false)}
         onChanged={reloadArtifacts}
+        aiBusy={waitingForReply}
+        onAskAi={async (prompt) => {
+          // Memakai model terakhir percakapan ini; tanpa model tersimpan, pengguna memilihnya dulu di komposer.
+          if (!conversation.modelAlias) throw new Error('Pilih model di komposer chat dan kirim satu pesan dulu, lalu coba lagi.')
+          await send(prompt, [], conversation.modelAlias, thinkMode)
+          onRefresh()
+        }}
       />
       </div>
     </>

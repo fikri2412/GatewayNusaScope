@@ -1,5 +1,5 @@
 import type { ArtifactSummary, MessageDto } from './api/types.ts'
-import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg, SANDBOX_CSP, SANDBOX_FLAGS, buildSandboxDoc } from './canvas.ts'
+import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg, SANDBOX_CSP, SANDBOX_FLAGS, buildSandboxDoc, SELECTION_ACTIONS, buildSelectionPrompt } from './canvas.ts'
 
 // Jalankan: npm run check:canvas. Node menjalankan .ts ini langsung; tanpa framework/dependency.
 
@@ -71,5 +71,17 @@ ok(buildSandboxDoc('<h1>x</h1>').startsWith('<meta http-equiv="Content-Security-
 ok(buildSandboxDoc('<h1>x</h1>').endsWith('<h1>x</h1>'), 'sumber utuh setelah CSP')
 ok(SANDBOX_CSP.includes("default-src 'none'") && !/connect-src|https?:/.test(SANDBOX_CSP), 'CSP menutup jaringan (default none, tanpa connect-src/host)')
 deep(SANDBOX_FLAGS, 'allow-scripts', 'sandbox hanya skrip: tanpa same-origin/popup/form/top-navigation')
+
+// Toolbar teks terpilih.
+const perpendek = SELECTION_ACTIONS.dokumen![0]
+const tanya = SELECTION_ACTIONS.dokumen![2]
+const ask = buildSelectionPrompt({ action: perpendek, title: 'Laporan', artifactId: 'abc-1', version: 3, text: 'kalimat panjang sekali' })
+ok(ask.includes('artifact_id=abc-1') && ask.includes('versi=3') && ask.includes('kalimat panjang sekali'), 'prompt memuat id, versi, dan teks terpilih')
+ok(ask.includes('baca_artifact') && ask.includes('perbarui_artifact') && ask.includes('versi_dasar'), 'aksi yang mengubah memandu baca lalu simpan dengan versi_dasar')
+const q = buildSelectionPrompt({ action: tanya, title: 'L', artifactId: 'x', version: 1, text: 'abc', question: ' apa maksudnya? ' })
+ok(q.includes('apa maksudnya?') && q.includes('jangan mengubah artifact') && !q.includes('perbarui_artifact'), 'Tanya hanya menjawab, tidak mengubah, dan memuat pertanyaan')
+deep(SELECTION_ACTIONS.kode!.map((a) => a.key), ['jelaskan', 'perbaiki', 'tanya'], 'aksi kode')
+deep(SELECTION_ACTIONS.diagram, undefined, 'diagram tidak punya toolbar teks')
+deep(SELECTION_ACTIONS.dokumen!.filter((a) => a.edits).map((a) => a.key), ['perpendek', 'formal'], 'hanya Perpendek/Formal yang mengubah dokumen')
 
 console.log('canvas.check: semua pemeriksaan lulus')

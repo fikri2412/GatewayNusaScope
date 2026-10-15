@@ -115,3 +115,43 @@ export const SANDBOX_FLAGS = 'allow-scripts'
 
 /** Dokumen `srcdoc` pratinjau: meta CSP ditempatkan paling awal, sebelum sumber dari AI/user. */
 export const buildSandboxDoc = (source: string) => `<meta http-equiv="Content-Security-Policy" content="${SANDBOX_CSP}">${source}`
+
+/** Batas teks terpilih yang dikirim ke AI; pesan chat dibatasi 8.000 karakter, sisanya untuk instruksi. */
+export const MAX_SELECTION_CHARS = 3000
+
+export type SelectionAction = { key: string; label: string; instruction: string; edits: boolean; needsQuestion?: boolean }
+
+/** Aksi toolbar teks terpilih per jenis artifact. `edits` = AI diminta menyimpan versi baru; selain itu hanya menjawab di chat. */
+export const SELECTION_ACTIONS: Partial<Record<ArtifactKind, SelectionAction[]>> = {
+  dokumen: [
+    { key: 'perpendek', label: 'Perpendek', instruction: 'Perpendek bagian terpilih dengan makna tetap.', edits: true },
+    { key: 'formal', label: 'Lebih formal', instruction: 'Ubah bagian terpilih menjadi lebih formal tanpa mengubah maknanya.', edits: true },
+    { key: 'tanya', label: 'Tanya…', instruction: 'Jawab pertanyaan berikut tentang bagian terpilih', edits: false, needsQuestion: true },
+  ],
+  kode: [
+    { key: 'jelaskan', label: 'Jelaskan', instruction: 'Jelaskan apa yang dilakukan bagian terpilih.', edits: false },
+    { key: 'perbaiki', label: 'Perbaiki', instruction: 'Perbaiki bug atau masalah pada bagian terpilih tanpa mengubah perilaku lain.', edits: true },
+    { key: 'tanya', label: 'Tanya…', instruction: 'Jawab pertanyaan berikut tentang bagian terpilih', edits: false, needsQuestion: true },
+  ],
+}
+
+/**
+ * Pesan chat untuk satu aksi pada teks terpilih. Teks terpilih dan artifact adalah data pengguna; AI dibimbing memakai
+ * baca_artifact + perbarui_artifact(versi_dasar) sehingga edit pengguna di antaranya tidak tertimpa (konflik versi).
+ * `question` hanya dipakai aksi `needsQuestion`.
+ */
+export function buildSelectionPrompt(input: {
+  action: SelectionAction
+  title: string
+  artifactId: string
+  version: number
+  text: string
+  question?: string
+}): string {
+  const { action, title, artifactId, version, text } = input
+  const task = action.needsQuestion ? `${action.instruction}: ${(input.question ?? '').trim()}` : action.instruction
+  const how = action.edits
+    ? 'Baca dulu isi terbaru dengan baca_artifact, ubah hanya bagian terpilih, lalu simpan lewat perbarui_artifact dengan versi_dasar sesuai versi yang kamu baca. Jangan menyalin seluruh isi ke chat; cukup rangkum perubahan dalam 1-2 kalimat.'
+    : 'Jawab di chat dan jangan mengubah artifact.'
+  return `[Canvas] Artifact "${title}" (artifact_id=${artifactId}, versi=${version}). Bagian terpilih:\n"""\n${text}\n"""\nTugas: ${task}\n${how}`
+}
