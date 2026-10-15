@@ -6,6 +6,7 @@ import { ApiError, errorMessage } from '../api/client'
 import type { ArtifactDto, ArtifactKind, ArtifactSummary, ArtifactVersionContent, ArtifactVersionInfo } from '../api/types'
 import { CODE_LANGUAGES, DIAGRAM_STARTER, artifactFileName, changedLines, kindLabel, sourceLabel } from '../canvas'
 import { DiagramView } from './DiagramView'
+import { SandboxPreview } from './SandboxPreview'
 import { Markdown } from './Markdown'
 import { Icon } from './NusaUi'
 import './Canvas.css'
@@ -83,7 +84,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   const [loaded, setLoaded] = useState<ArtifactDto | null>(null)
   const [draft, setDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState(summary.title)
-  const [mode, setMode] = useState<'edit' | 'view'>(summary.kind === 'diagram' ? 'view' : 'edit')
+  const [mode, setMode] = useState<'edit' | 'view' | 'preview'>(summary.kind === 'diagram' ? 'view' : 'edit')
   const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [viewing, setViewing] = useState<ArtifactVersionContent | null>(null)
@@ -242,6 +243,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
 
   const isCode = summary.kind === 'kode'
   const isDiagram = summary.kind === 'diagram'
+  const isHtml = isCode && summary.language === 'html'
   const language = summary.language ?? 'text'
   const shown = viewing?.content ?? draft
   const fileName = artifactFileName(titleDraft, summary.kind, summary.language)
@@ -261,8 +263,13 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
         <span className="canvas-version" title={`Versi aktif di server: ${loaded.currentVersion}`}>v{loaded.currentVersion}{dirty ? ' •' : ''}</span>
         <div className="canvas-actions">
           <button type="button" className="ghost-button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} disabled={viewing !== null}>
-            {mode === 'edit' ? (isCode ? 'Sorotan' : isDiagram ? 'Hasil' : 'Pratinjau') : isDiagram ? 'Kode Mermaid' : 'Edit'}
+            {mode === 'edit' ? (isCode ? 'Sorotan' : isDiagram ? 'Hasil' : 'Pratinjau') : isDiagram && mode === 'view' ? 'Kode Mermaid' : 'Edit'}
           </button>
+          {isHtml && (
+            <button type="button" className="ghost-button" aria-pressed={mode === 'preview'} onClick={() => setMode(mode === 'preview' ? 'edit' : 'preview')} disabled={viewing !== null}>
+              Pratinjau
+            </button>
+          )}
           <button type="button" className="ghost-button" onClick={() => void undo()} disabled={busy || viewing !== null || (!dirty && loaded.currentVersion < 2)}
             title={dirty ? 'Buang perubahan yang belum disimpan' : `Kembali ke isi v${loaded.currentVersion - 1} (dicatat sebagai versi baru)`}>
             {dirty ? 'Buang perubahan' : 'Urungkan'}
@@ -322,7 +329,9 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       )}
 
       <div className="canvas-content">
-        {viewing || mode === 'view' ? (
+        {isHtml && mode === 'preview' && !viewing ? (
+          <SandboxPreview source={draft} />
+        ) : viewing || mode === 'view' ? (
           isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
             : isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
         ) : isCode || isDiagram ? (

@@ -101,3 +101,16 @@ export function sizeSvg(svg: string): { svg: string; width: number; height: numb
   const tag = open[0].replace(/\s(?:width|height)="[^"]*"/g, '').replace('<svg', `<svg width="${width}" height="${height}"`)
   return { svg: svg.replace(open[0], tag), width, height }
 }
+
+/**
+ * CSP dokumen pratinjau: tanpa jaringan apa pun (connect/img/font/media hanya data:/blob:), tanpa form, tanpa base.
+ * Skrip dan gaya inline tetap boleh supaya halaman HTML sederhana berfungsi.
+ */
+export const SANDBOX_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data:; form-action 'none'; base-uri 'none'"
+
+/** Atribut `sandbox` iframe pratinjau: skrip boleh, tetapi TANPA allow-same-origin (origin buram), popup, form, atau navigasi top. */
+export const SANDBOX_FLAGS = 'allow-scripts'
+
+/** Dokumen `srcdoc` pratinjau: meta CSP ditempatkan paling awal, sebelum sumber dari AI/user. */
+export const buildSandboxDoc = (source: string) => `<meta http-equiv="Content-Security-Policy" content="${SANDBOX_CSP}">${source}`

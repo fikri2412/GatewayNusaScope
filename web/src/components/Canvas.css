@@ -73,3 +73,7 @@
 .canvas-diagram-bar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
 .canvas-diagram-stage { flex: 1; min-height: 0; padding: 16px; overflow: auto; background-color: var(--ns-surface); background-image: radial-gradient(var(--ns-placeholder-line) 1px, transparent 1px); background-size: 18px 18px; }
 .canvas-diagram-img { display: block; max-width: none; margin: 0 auto; background: #fff; border-radius: var(--ns-radius-md); }
+
+/* Pratinjau HTML sandbox. */
+.canvas-preview { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.canvas-preview-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }

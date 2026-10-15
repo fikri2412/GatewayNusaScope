@@ -1,5 +1,5 @@
 import type { ArtifactSummary, MessageDto } from './api/types.ts'
-import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg } from './canvas.ts'
+import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg, SANDBOX_CSP, SANDBOX_FLAGS, buildSandboxDoc } from './canvas.ts'
 
 // Jalankan: npm run check:canvas. Node menjalankan .ts ini langsung; tanpa framework/dependency.
 
@@ -65,5 +65,11 @@ ok(sized !== null && !sized.svg.includes('width="100%"') && sized.svg.includes('
 deep(sizeSvg('<svg viewBox="0 0 0 0"></svg>'), null, 'viewBox nol ditolak')
 deep(sizeSvg('<svg></svg>'), null, 'tanpa viewBox ditolak')
 deep(sizeSvg('bukan svg'), null, 'bukan svg ditolak')
+
+// Sandbox pratinjau.
+ok(buildSandboxDoc('<h1>x</h1>').startsWith('<meta http-equiv="Content-Security-Policy"'), 'CSP paling awal sebelum sumber')
+ok(buildSandboxDoc('<h1>x</h1>').endsWith('<h1>x</h1>'), 'sumber utuh setelah CSP')
+ok(SANDBOX_CSP.includes("default-src 'none'") && !/connect-src|https?:/.test(SANDBOX_CSP), 'CSP menutup jaringan (default none, tanpa connect-src/host)')
+deep(SANDBOX_FLAGS, 'allow-scripts', 'sandbox hanya skrip: tanpa same-origin/popup/form/top-navigation')
 
 console.log('canvas.check: semua pemeriksaan lulus')
