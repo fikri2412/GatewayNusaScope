@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 
@@ -35,13 +36,29 @@ public static partial class ArtifactStore
         if (title.Trim().Length > ArtifactLimits.MaxTitleChars) return $"Judul maksimal {ArtifactLimits.MaxTitleChars} karakter.";
         if (language is not null && !LanguagePattern().IsMatch(language))
             return "bahasa hanya boleh huruf kecil, angka, dan + # . _ - (maksimal 40 karakter).";
-        return ValidateContent(content);
+        return ValidateContent(content, kind);
     }
 
-    public static string? ValidateContent(string? content)
+    /// <summary>
+    /// Isi spreadsheet adalah JSON array sheet milik editor web (format Fortune-sheet): server hanya memastikan
+    /// bentuknya array JSON yang valid, bukan isi sel. Jenis lain menerima teks apa pun.
+    /// </summary>
+    public static string? ValidateContent(string? content, string? kind = null)
     {
         if (content is null) return "Isi wajib ada (boleh kosong, tidak boleh null).";
         if (content.Length > ArtifactLimits.MaxContentChars) return $"Isi maksimal {ArtifactLimits.MaxContentChars:N0} karakter.";
+        if (kind == ArtifactKinds.Spreadsheet)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(content);
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) return "Isi spreadsheet harus berupa array JSON sheet.";
+            }
+            catch (JsonException)
+            {
+                return "Isi spreadsheet bukan JSON yang valid.";
+            }
+        }
         return null;
     }
 

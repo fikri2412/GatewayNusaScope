@@ -93,6 +93,51 @@ public class ArtifactTests : QueueTestBase
         Assert.Null(artifact.Language);
     }
 
+    [Theory]
+    [InlineData("bukan json")]
+    [InlineData("{\"name\":\"Sheet1\"}")]   // objek, bukan array
+    public async Task Spreadsheet_content_must_be_a_json_array(string content)
+    {
+        var conversationId = await NewConversationAsync();
+        await using var db = NewContext();
+
+        var (status, body) = await ConversationTestSupport.ExecuteAsync(await ArtifactEndpoints.CreateAsync(conversationId,
+            new("spreadsheet", "Anggaran", null, content), ConversationTestSupport.Request("test"), db, CancellationToken.None));
+
+        Assert.Equal(400, status);
+        Assert.Equal(ArtifactEndpoints.InvalidCode, Json(body).GetProperty("code").GetString());
+        Assert.Equal(0, await db.Artifacts.CountAsync());
+    }
+
+    [Fact]
+    public async Task Saving_a_non_array_over_a_spreadsheet_is_rejected_and_keeps_the_version()
+    {
+        var (_, id) = await NewArtifactAsync("[{\"name\":\"Sheet1\"}]", kind: "spreadsheet");
+
+        var (status, _) = await SaveAsync(id, 1, "bukan json");
+
+        Assert.Equal(400, status);
+        await using var db = NewContext();
+        Assert.Equal(1, await db.ArtifactVersions.CountAsync(v => v.ArtifactId == id));
+    }
+
+    [Fact]
+    public async Task Ai_tool_cannot_create_or_update_spreadsheets()
+    {
+        var (conversationId, id) = await NewArtifactAsync("[{\"name\":\"Sheet1\"}]", kind: "spreadsheet");
+        await using var db = NewContext();
+
+        var create = await ToolDispatcher.ExecuteAsync(Context(db, conversationId), ToolDefinitions.BuatArtifact,
+            """{"jenis":"spreadsheet","judul":"X","isi":"[]"}""", CancellationToken.None);
+        var update = await ToolDispatcher.ExecuteAsync(Context(db, conversationId), ToolDefinitions.PerbaruiArtifact,
+            $$"""{"artifact_id":"{{id}}","versi_dasar":1,"isi":"[]"}""", CancellationToken.None);
+
+        Assert.True(create.IsError);
+        Assert.True(update.IsError);
+        Assert.Equal(1, await db.Artifacts.CountAsync());
+        Assert.Equal(1, await db.ArtifactVersions.CountAsync());
+    }
+
     [Fact]
     public async Task Save_creates_a_new_version_and_keeps_the_old_one()
     {

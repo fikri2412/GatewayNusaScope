@@ -7,6 +7,8 @@ import type { ArtifactDto, ArtifactKind, ArtifactSummary, ArtifactVersionContent
 import { CODE_LANGUAGES, DIAGRAM_STARTER, artifactFileName, changedLines, kindLabel, sourceLabel } from '../canvas'
 import { DiagramView } from './DiagramView'
 import { SandboxPreview } from './SandboxPreview'
+import { SpreadsheetView } from './SpreadsheetView'
+import { STARTER_CONTENT } from '../spreadsheet'
 import { Markdown } from './Markdown'
 import { Icon } from './NusaUi'
 import './Canvas.css'
@@ -98,7 +100,11 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   const dirty = loaded !== null && (draft !== loaded.content || titleDraft.trim() !== loaded.title)
   useEffect(() => onDirtyChange(summary.id, dirty), [onDirtyChange, summary.id, dirty])
 
-  const adopt = (next: ArtifactDto) => {
+  const [sheetKey, setSheetKey] = useState(0)
+
+  /** `remount`: spreadsheet dibangun ulang dari isi baru; false setelah simpan, supaya kursor/seleksi tidak lepas. */
+  const adopt = (next: ArtifactDto, remount = true) => {
+    if (remount) setSheetKey((k) => k + 1)
     setLoaded(next)
     setDraft(next.content)
     setTitleDraft(next.title)
@@ -167,7 +173,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   const save = () =>
     loaded && dirty && !busy
       ? run(async () => {
-          adopt(await saveArtifact(summary.id, loaded.currentVersion, draft, titleDraft.trim() || undefined))
+          adopt(await saveArtifact(summary.id, loaded.currentVersion, draft, titleDraft.trim() || undefined), false)
           await onChanged()
         })
       : Promise.resolve()
@@ -178,6 +184,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       // Ada edit lokal: urungkan berarti membuangnya, tanpa menyentuh server.
       setDraft(loaded.content)
       setTitleDraft(loaded.title)
+      setSheetKey((k) => k + 1)
       return
     }
     return run(async () => {
@@ -243,6 +250,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
 
   const isCode = summary.kind === 'kode'
   const isDiagram = summary.kind === 'diagram'
+  const isSheet = summary.kind === 'spreadsheet'
   const isHtml = isCode && summary.language === 'html'
   const language = summary.language ?? 'text'
   const shown = viewing?.content ?? draft
@@ -262,9 +270,9 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
         />
         <span className="canvas-version" title={`Versi aktif di server: ${loaded.currentVersion}`}>v{loaded.currentVersion}{dirty ? ' •' : ''}</span>
         <div className="canvas-actions">
-          <button type="button" className="ghost-button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} disabled={viewing !== null}>
+          {!isSheet && <button type="button" className="ghost-button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} disabled={viewing !== null}>
             {mode === 'edit' ? (isCode ? 'Sorotan' : isDiagram ? 'Hasil' : 'Pratinjau') : isDiagram && mode === 'view' ? 'Kode Mermaid' : 'Edit'}
-          </button>
+          </button>}
           {isHtml && (
             <button type="button" className="ghost-button" aria-pressed={mode === 'preview'} onClick={() => setMode(mode === 'preview' ? 'edit' : 'preview')} disabled={viewing !== null}>
               Pratinjau
@@ -275,12 +283,16 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
             {dirty ? 'Buang perubahan' : 'Urungkan'}
           </button>
           <button type="button" className="ghost-button" onClick={toggleHistory} aria-expanded={historyOpen}>Riwayat</button>
-          <button type="button" className="icon-button" onClick={() => void copy()} aria-label={copied ? 'Tersalin' : 'Salin isi'} title={copied ? 'Tersalin' : 'Salin isi'}>
-            <Icon name={copied ? 'check' : 'copy'} />
-          </button>
-          <button type="button" className="icon-button" onClick={() => downloadArtifact(fileName, shown, summary.kind)} aria-label={`Unduh ${fileName}`} title={`Unduh ${fileName}`}>
-            <Icon name="upload" />
-          </button>
+          {!isSheet && (
+            <>
+              <button type="button" className="icon-button" onClick={() => void copy()} aria-label={copied ? 'Tersalin' : 'Salin isi'} title={copied ? 'Tersalin' : 'Salin isi'}>
+                <Icon name={copied ? 'check' : 'copy'} />
+              </button>
+              <button type="button" className="icon-button" onClick={() => downloadArtifact(fileName, shown, summary.kind)} aria-label={`Unduh ${fileName}`} title={`Unduh ${fileName}`}>
+                <Icon name="upload" />
+              </button>
+            </>
+          )}
           <button type="button" className="primary-button" onClick={() => void save()} disabled={!dirty || busy || viewing !== null}>
             {busy ? 'Menyimpan…' : 'Simpan'}
           </button>
@@ -329,7 +341,9 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       )}
 
       <div className="canvas-content">
-        {isHtml && mode === 'preview' && !viewing ? (
+        {isSheet ? (
+          <SpreadsheetView key={viewing ? `v${viewing.version}` : `c${sheetKey}`} value={viewing?.content ?? draft} readOnly={viewing !== null} title={titleDraft} onChange={setDraft} />
+        ) : isHtml && mode === 'preview' && !viewing ? (
           <SandboxPreview source={draft} />
         ) : viewing || mode === 'view' ? (
           isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
@@ -342,7 +356,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
       </div>
 
       <footer className="canvas-foot">
-        <span className="muted">{isCode ? `Kode · ${language}` : isDiagram ? 'Diagram · Mermaid' : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
+        <span className="muted">{isCode ? `Kode · ${language}` : isDiagram ? 'Diagram · Mermaid' : isSheet ? 'Spreadsheet · Fortune-sheet' : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
         {confirmDelete ? (
           <span className="canvas-confirm">
             Hapus artifact beserta semua versinya?
@@ -390,6 +404,11 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
     if (open && !active && artifacts.length > 0) onSelect(artifacts[0].id)
   }, [open, active, artifacts, onSelect])
 
+  // Tab aktif yang di luar jangkauan strip (banyak artifact) digulir ke terlihat.
+  useEffect(() => {
+    document.querySelector('.canvas-tab[aria-selected="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
+  }, [activeId, artifacts.length])
+
   useEffect(() => {
     if (dirtyIds.size === 0) return
     const warn = (e: BeforeUnloadEvent) => e.preventDefault()
@@ -415,9 +434,9 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
     try {
       const made = await createArtifact(conversationId, {
         kind,
-        title: kind === 'dokumen' ? 'Dokumen baru' : kind === 'diagram' ? 'Diagram baru' : 'Kode baru',
+        title: kind === 'dokumen' ? 'Dokumen baru' : kind === 'diagram' ? 'Diagram baru' : kind === 'spreadsheet' ? 'Spreadsheet baru' : 'Kode baru',
         language: kind === 'kode' ? language : null,
-        content: kind === 'diagram' ? DIAGRAM_STARTER : '',
+        content: kind === 'diagram' ? DIAGRAM_STARTER : kind === 'spreadsheet' ? STARTER_CONTENT : '',
       })
       await onChanged()
       onSelect(made.id)
@@ -457,6 +476,7 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
       <div className="canvas-new">
         <button type="button" className="ghost-button" onClick={() => void create('dokumen')} disabled={creating}>+ Dokumen</button>
         <button type="button" className="ghost-button" onClick={() => void create('diagram')} disabled={creating}>+ Diagram</button>
+        <button type="button" className="ghost-button" onClick={() => void create('spreadsheet')} disabled={creating}>+ Spreadsheet</button>
         <button type="button" className="ghost-button" onClick={() => void create('kode')} disabled={creating}>+ Kode</button>
         <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
           {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}

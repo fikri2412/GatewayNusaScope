@@ -204,6 +204,7 @@ public static class ToolDispatcher
         // Jawaban alternatif (jawab ulang/bandingkan) tidak boleh menggandakan artifact di Canvas.
         if (!ctx.IsPrimary) return ToolResult.Error("Artifact hanya dibuat oleh jawaban utama; tulis isinya langsung di jawaban.");
         TryGetString(args, "jenis", out var jenis);
+        if (jenis == ArtifactKinds.Spreadsheet) return ToolResult.Error("Spreadsheet hanya dibuat dan diedit oleh user di Canvas.");
         TryGetString(args, "judul", out var judul);
         if (!TryGetString(args, "isi", out var isi)) return ToolResult.Error("isi wajib diisi.");
         TryGetString(args, "bahasa", out var bahasa);
@@ -241,8 +242,10 @@ public static class ToolDispatcher
         if (!TryGetString(args, "isi", out var isi)) return ToolResult.Error("isi wajib diisi.");
         var invalid = ArtifactStore.ValidateContent(isi);
         if (invalid is not null) return ToolResult.Error(invalid);
-        if (!await ctx.Db.Artifacts.AnyAsync(a => a.Id == artifactId && a.ConversationId == ctx.ConversationId, ct))
-            return ToolResult.Error("Artifact tidak ditemukan di percakapan ini.");
+        var kind = await ctx.Db.Artifacts.AsNoTracking()
+            .Where(a => a.Id == artifactId && a.ConversationId == ctx.ConversationId).Select(a => a.Kind).FirstOrDefaultAsync(ct);
+        if (kind is null) return ToolResult.Error("Artifact tidak ditemukan di percakapan ini.");
+        if (kind == ArtifactKinds.Spreadsheet) return ToolResult.Error("Spreadsheet hanya diedit oleh user di Canvas.");
 
         var result = await ArtifactStore.SaveVersionAsync(ctx.Db, artifactId, baseVersion, isi, title: null, ArtifactSources.Ai, ct);
         return result.Status switch

@@ -72,10 +72,11 @@ public static class ArtifactEndpoints
     public static async Task<IResult> SaveAsync(Guid id, SaveArtifactRequest? req, HttpContext http, AppDbContext db,
         CancellationToken ct)
     {
-        if (await OwnedAsync(db, id, http.User.UserId(), ct) is null) return Results.NotFound();
+        var owned = await OwnedAsync(db, id, http.User.UserId(), ct);
+        if (owned is null) return Results.NotFound();
         if (req is not { BaseVersion: > 0 })
             return Error(StatusCodes.Status400BadRequest, "baseVersion wajib diisi.", InvalidCode);
-        var invalid = ArtifactStore.ValidateContent(req.Content);
+        var invalid = ArtifactStore.ValidateContent(req.Content, owned.Kind);
         if (invalid is null && req.Title is { } t && t.Trim().Length > ArtifactLimits.MaxTitleChars)
             invalid = $"Judul maksimal {ArtifactLimits.MaxTitleChars} karakter.";
         if (invalid is not null) return Error(StatusCodes.Status400BadRequest, invalid, InvalidCode);

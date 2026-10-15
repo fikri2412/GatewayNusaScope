@@ -149,7 +149,7 @@ export interface JobDto {
   createdAt: string
 }
 
-export type ArtifactKind = 'dokumen' | 'kode' | 'diagram'
+export type ArtifactKind = 'dokumen' | 'kode' | 'diagram' | 'spreadsheet'
 
 /** Artifact Canvas tanpa isi: dasar tab dan kartu referensi. */
 export interface ArtifactSummary {

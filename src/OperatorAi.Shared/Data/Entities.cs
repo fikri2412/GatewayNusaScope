@@ -151,8 +151,8 @@ public class SavedAnswer
 /// <summary>Jenis artifact yang didukung Canvas. Nilai disimpan apa adanya di kolom <c>kind</c>.</summary>
 public static class ArtifactKinds
 {
-    public const string Document = "dokumen", Code = "kode", Diagram = "diagram";
-    public static readonly string[] All = [Document, Code, Diagram];
+    public const string Document = "dokumen", Code = "kode", Diagram = "diagram", Spreadsheet = "spreadsheet";
+    public static readonly string[] All = [Document, Code, Diagram, Spreadsheet];
 }
 
 /// <summary>Asal sebuah versi artifact: user menyimpan, AI membuat/memperbarui, atau salinan versi lama (urungkan).</summary>

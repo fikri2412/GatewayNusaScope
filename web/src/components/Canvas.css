@@ -77,3 +77,8 @@
 /* Pratinjau HTML sandbox. */
 .canvas-preview { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .canvas-preview-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+
+/* Spreadsheet (Fortune-sheet): panggung penuh; Fortune-sheet mengukur induknya, jadi tinggi harus pasti. */
+.canvas-sheet { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.canvas-sheet-grid { position: relative; flex: 1; min-height: 320px; }
+.canvas-sheet-grid > .fortune-container { position: absolute; inset: 0; }

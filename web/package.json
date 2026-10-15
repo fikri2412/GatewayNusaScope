@@ -13,9 +13,11 @@
     "check:export": "node src/exportMarkdown.check.ts",
     "check:thinking": "node src/thinkingModes.check.ts",
     "preview": "vite preview",
-    "check:canvas": "node src/canvas.check.ts"
+    "check:canvas": "node src/canvas.check.ts",
+    "check:spreadsheet": "node src/spreadsheet.check.ts"
   },
   "dependencies": {
+    "@fortune-sheet/react": "1.0.4",
     "@microsoft/signalr": "^10.0.11",
     "mermaid": "11.12.0",
     "prism-react-renderer": "^2.4.1",

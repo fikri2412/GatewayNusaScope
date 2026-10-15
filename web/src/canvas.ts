@@ -56,7 +56,7 @@ export function artifactFileName(title: string, kind: ArtifactKind, language: st
     .replace(/^[-.]+|[-.]+$/g, '')
     .slice(0, 60)
     .replace(/-+$/, '')
-  const ext = kind === 'dokumen' ? 'md' : kind === 'diagram' ? 'mmd' : (EXTENSIONS[language ?? ''] ?? 'txt')
+  const ext = kind === 'dokumen' ? 'md' : kind === 'diagram' ? 'mmd' : kind === 'spreadsheet' ? 'csv' : (EXTENSIONS[language ?? ''] ?? 'txt')
   return `${base || 'artifact'}.${ext}`
 }
 
@@ -74,7 +74,8 @@ export const sourceLabel = (source: string) =>
   source === 'ai' ? 'AI' : source === 'restore' ? 'Dipulihkan' : 'Anda'
 
 /** Label pendek jenis artifact untuk tab dan kartu. */
-export const kindLabel = (kind: ArtifactKind) => (kind === 'dokumen' ? 'Dok' : kind === 'diagram' ? 'Diagram' : 'Kode')
+export const kindLabel = (kind: ArtifactKind) =>
+  kind === 'dokumen' ? 'Dok' : kind === 'diagram' ? 'Diagram' : kind === 'spreadsheet' ? 'Sheet' : 'Kode'
 
 /** Isi awal diagram baru; sintaks valid supaya hasilnya langsung terlihat. */
 export const DIAGRAM_STARTER = 'flowchart TD\n  A[Mulai] --> B{Data lengkap?}\n  B -->|Ya| C[Selesai]\n  B -->|Tidak| A'
