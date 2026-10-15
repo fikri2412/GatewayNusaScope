@@ -7,13 +7,14 @@ Proyek: **Operator AI**, chatbot web dengan AI sebagai operator yang membagi tug
 - `DESIGN.md` adalah spesifikasi lengkap dan sumber kebenaran. Baca bagian yang relevan sebelum menulis kode.
 - `GATEWAY.md` adalah spesifikasi AI Gateway (produk mandiri multi-tenant di `gateway/`). Gateway dikerjakan lebih dulu dari chatbot; fasenya G0-G5 di dokumen itu. Untuk pekerjaan gateway, `GATEWAY.md` menjadi sumber kebenaran.
 - `DECISIONS.md` berisi keputusan yang sudah diambil di sesi sebelumnya. Baca seluruhnya di awal sesi; bagian **"Status akhir sesi (handoff)"** di paling bawah berisi kondisi terkini dan langkah berikutnya. Bila belum ada, berarti proyek belum dimulai: kerjakan `SETUP.md` dulu.
+- `TESTING.md` berisi aturan pengujian: agent cloud **tidak menjalankan unit test xUnit** (dijalankan di agent lokal). Baca sebelum menjalankan perintah test.
 - `SETUP.md` berisi langkah membuat kerangka project (awal Fase 0). Semua dokumen proyek berada di root repo; tidak ada folder `docs/`.
 
 ## Cara kerja
 
 1. Tanyakan atau tentukan fase yang dikerjakan (lihat `DESIGN.md` bagian 15).
 2. Tulis rencana singkat: file yang dibuat/diubah dan urutannya.
-3. Implementasikan, lalu jalankan `dotnet build`, `dotnet test`, dan `npm run build` di `web/` bila disentuh.
+3. Implementasikan, lalu jalankan `dotnet build` dan `npm run build` di `web/` bila disentuh. `dotnet test` hanya di agent lokal; agent cloud tidak menjalankannya (lihat `TESTING.md`).
 4. Cek kriteria "Selesai bila" fase tersebut.
 5. Tambahkan ringkasan fase dan keputusan penting ke `DECISIONS.md`.
 
