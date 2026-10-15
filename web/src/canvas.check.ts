@@ -1,10 +1,14 @@
 import type { ArtifactSummary, MessageDto } from './api/types.ts'
-import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines } from './canvas.ts'
+import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg } from './canvas.ts'
 
 // Jalankan: npm run check:canvas. Node menjalankan .ts ini langsung; tanpa framework/dependency.
 
 const deep = (actual: unknown, expected: unknown, label: string) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`)
+}
+
+const ok = (condition: boolean, label: string) => {
+  if (!condition) throw new Error(label)
 }
 
 const lines = (prev: string, next: string) => {
@@ -49,5 +53,17 @@ deep(artifactsForMessage(message({}), all).map((a) => a.id), ['a'], 'cocok lewat
 deep(artifactsForMessage(message({ isPrimary: false }), all), [], 'alternatif tanpa kartu')
 deep(artifactsForMessage(message({ role: 'user', sourceMessageId: null }), all), [], 'pesan user tanpa kartu')
 deep(artifactsForMessage(message({ sourceMessageId: null }), all), [], 'tanpa sumber tanpa kartu')
+
+// Diagram: ekstensi, pagar kode AI, ukuran SVG.
+deep(artifactFileName('Alur persetujuan', 'diagram', null), 'Alur-persetujuan.mmd', 'diagram .mmd')
+deep(normalizeMermaid('flowchart TD\n A-->B'), 'flowchart TD\n A-->B', 'tanpa pagar tidak berubah')
+deep(normalizeMermaid('```mermaid\nflowchart TD\n A-->B\n```'), 'flowchart TD\n A-->B', 'pagar mermaid dibuang')
+deep(normalizeMermaid('```\nerDiagram\n A ||--o{ B : has\n```\n'), 'erDiagram\n A ||--o{ B : has', 'pagar tanpa bahasa dibuang')
+const sized = sizeSvg('<svg id="d1" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 312.5 180.2" style="max-width: 312.5px;"><g/></svg>')
+deep(sized && [sized.width, sized.height], [313, 181], 'ukuran dari viewBox dibulatkan ke atas')
+ok(sized !== null && !sized.svg.includes('width="100%"') && sized.svg.includes('width="313" height="181"') && sized.svg.endsWith('<g/></svg>'), 'width 100% diganti ukuran piksel, isi utuh')
+deep(sizeSvg('<svg viewBox="0 0 0 0"></svg>'), null, 'viewBox nol ditolak')
+deep(sizeSvg('<svg></svg>'), null, 'tanpa viewBox ditolak')
+deep(sizeSvg('bukan svg'), null, 'bukan svg ditolak')
 
 console.log('canvas.check: semua pemeriksaan lulus')

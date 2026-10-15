@@ -151,8 +151,8 @@ public class SavedAnswer
 /// <summary>Jenis artifact yang didukung Canvas. Nilai disimpan apa adanya di kolom <c>kind</c>.</summary>
 public static class ArtifactKinds
 {
-    public const string Document = "dokumen", Code = "kode";
-    public static readonly string[] All = [Document, Code];
+    public const string Document = "dokumen", Code = "kode", Diagram = "diagram";
+    public static readonly string[] All = [Document, Code, Diagram];
 }
 
 /// <summary>Asal sebuah versi artifact: user menyimpan, AI membuat/memperbarui, atau salinan versi lama (urungkan).</summary>
@@ -171,7 +171,7 @@ public class Artifact
     public Guid ConversationId { get; set; }
     public required string Kind { get; set; }
     public required string Title { get; set; }
-    /// <summary>Bahasa kode (mis. <c>csharp</c>); null untuk dokumen.</summary>
+    /// <summary>Bahasa kode (mis. <c>csharp</c>); null untuk dokumen dan diagram (isi diagram = sumber Mermaid).</summary>
     public string? Language { get; set; }
     /// <summary>Nomor versi aktif (mulai 1). Penyimpanan wajib menyebut versi dasarnya; beda berarti konflik.</summary>
     public int CurrentVersion { get; set; }

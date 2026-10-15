@@ -65,3 +65,11 @@
   .canvas { height: 85dvh; border-left: 0; border-top: 1px solid var(--ns-border); }
   .canvas-actions { width: 100%; }
 }
+
+/* Diagram Mermaid: bilah kontrol + panggung gulir bertitik. */
+.canvas-diagram { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.canvas-diagram-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--ns-divider); }
+.canvas-diagram-bar .ghost-button { height: 30px; padding: 0 10px; font-size: var(--ns-text-base-sm); min-width: 34px; justify-content: center; }
+.canvas-diagram-bar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-diagram-stage { flex: 1; min-height: 0; padding: 16px; overflow: auto; background-color: var(--ns-surface); background-image: radial-gradient(var(--ns-placeholder-line) 1px, transparent 1px); background-size: 18px 18px; }
+.canvas-diagram-img { display: block; max-width: none; margin: 0 auto; background: #fff; border-radius: var(--ns-radius-md); }

@@ -45,9 +45,9 @@ public static partial class ArtifactStore
         return null;
     }
 
-    /// <summary>Bahasa kanonik: dokumen tidak punya bahasa; kode tanpa bahasa jatuh ke <c>text</c>.</summary>
+    /// <summary>Bahasa kanonik: hanya kode yang punya bahasa (tanpa bahasa jatuh ke <c>text</c>); dokumen dan diagram null.</summary>
     public static string? NormalizeLanguage(string kind, string? language) =>
-        kind == ArtifactKinds.Document ? null : string.IsNullOrWhiteSpace(language) ? "text" : language.Trim().ToLowerInvariant();
+        kind != ArtifactKinds.Code ? null : string.IsNullOrWhiteSpace(language) ? "text" : language.Trim().ToLowerInvariant();
 
     public static async Task<ArtifactWrite> CreateAsync(AppDbContext db, Guid conversationId, string kind, string title,
         string? language, string content, string source, long? sourceMessageId, CancellationToken ct)

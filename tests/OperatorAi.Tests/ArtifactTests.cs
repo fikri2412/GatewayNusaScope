@@ -82,6 +82,18 @@ public class ArtifactTests : QueueTestBase
     }
 
     [Fact]
+    public async Task Diagram_artifacts_store_mermaid_source_without_a_language()
+    {
+        var (_, id) = await NewArtifactAsync("flowchart TD\n  A --> B", kind: "diagram");
+        await using var db = NewContext();
+
+        var artifact = await db.Artifacts.SingleAsync(a => a.Id == id);
+
+        Assert.Equal("diagram", artifact.Kind);
+        Assert.Null(artifact.Language);
+    }
+
+    [Fact]
     public async Task Save_creates_a_new_version_and_keeps_the_old_one()
     {
         var (_, id) = await NewArtifactAsync("v1");

@@ -56,7 +56,7 @@ export function artifactFileName(title: string, kind: ArtifactKind, language: st
     .replace(/^[-.]+|[-.]+$/g, '')
     .slice(0, 60)
     .replace(/-+$/, '')
-  const ext = kind === 'dokumen' ? 'md' : (EXTENSIONS[language ?? ''] ?? 'txt')
+  const ext = kind === 'dokumen' ? 'md' : kind === 'diagram' ? 'mmd' : (EXTENSIONS[language ?? ''] ?? 'txt')
   return `${base || 'artifact'}.${ext}`
 }
 
@@ -72,3 +72,32 @@ export function artifactsForMessage(message: MessageDto, artifacts: ArtifactSumm
 /** Label sumber versi untuk riwayat. */
 export const sourceLabel = (source: string) =>
   source === 'ai' ? 'AI' : source === 'restore' ? 'Dipulihkan' : 'Anda'
+
+/** Label pendek jenis artifact untuk tab dan kartu. */
+export const kindLabel = (kind: ArtifactKind) => (kind === 'dokumen' ? 'Dok' : kind === 'diagram' ? 'Diagram' : 'Kode')
+
+/** Isi awal diagram baru; sintaks valid supaya hasilnya langsung terlihat. */
+export const DIAGRAM_STARTER = 'flowchart TD\n  A[Mulai] --> B{Data lengkap?}\n  B -->|Ya| C[Selesai]\n  B -->|Tidak| A'
+
+/** AI kadang membungkus Mermaid dengan pagar kode; renderer hanya butuh sintaksnya. */
+export function normalizeMermaid(source: string): string {
+  const text = source.trim()
+  const fenced = /^```[\w-]*[ \t]*\r?\n([\s\S]*?)\r?\n?```$/.exec(text)
+  return (fenced ? fenced[1] : text).trim()
+}
+
+/**
+ * Beri `<svg>` hasil Mermaid ukuran piksel eksplisit dari viewBox (Mermaid memakai width="100%"), supaya <img> dan
+ * ekspor PNG punya dimensi nyata. null bila viewBox tidak ada/tidak masuk akal.
+ */
+export function sizeSvg(svg: string): { svg: string; width: number; height: number } | null {
+  const open = /<svg\b[^>]*>/.exec(svg)
+  if (!open) return null
+  const box = /viewBox="\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(open[0])
+  if (!box) return null
+  const width = Math.ceil(Number(box[1]))
+  const height = Math.ceil(Number(box[2]))
+  if (!(width > 0 && height > 0)) return null
+  const tag = open[0].replace(/\s(?:width|height)="[^"]*"/g, '').replace('<svg', `<svg width="${width}" height="${height}"`)
+  return { svg: svg.replace(open[0], tag), width, height }
+}

@@ -4,7 +4,8 @@ import { Highlight, themes } from 'prism-react-renderer'
 import { createArtifact, deleteArtifact, getArtifact, getArtifactVersion, listArtifactVersions, restoreArtifact, saveArtifact } from '../api/artifacts'
 import { ApiError, errorMessage } from '../api/client'
 import type { ArtifactDto, ArtifactKind, ArtifactSummary, ArtifactVersionContent, ArtifactVersionInfo } from '../api/types'
-import { CODE_LANGUAGES, artifactFileName, changedLines, sourceLabel } from '../canvas'
+import { CODE_LANGUAGES, DIAGRAM_STARTER, artifactFileName, changedLines, kindLabel, sourceLabel } from '../canvas'
+import { DiagramView } from './DiagramView'
 import { Markdown } from './Markdown'
 import { Icon } from './NusaUi'
 import './Canvas.css'
@@ -82,7 +83,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   const [loaded, setLoaded] = useState<ArtifactDto | null>(null)
   const [draft, setDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState(summary.title)
-  const [mode, setMode] = useState<'edit' | 'view'>('edit')
+  const [mode, setMode] = useState<'edit' | 'view'>(summary.kind === 'diagram' ? 'view' : 'edit')
   const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [viewing, setViewing] = useState<ArtifactVersionContent | null>(null)
@@ -240,6 +241,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
   }
 
   const isCode = summary.kind === 'kode'
+  const isDiagram = summary.kind === 'diagram'
   const language = summary.language ?? 'text'
   const shown = viewing?.content ?? draft
   const fileName = artifactFileName(titleDraft, summary.kind, summary.language)
@@ -259,7 +261,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
         <span className="canvas-version" title={`Versi aktif di server: ${loaded.currentVersion}`}>v{loaded.currentVersion}{dirty ? ' •' : ''}</span>
         <div className="canvas-actions">
           <button type="button" className="ghost-button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} disabled={viewing !== null}>
-            {mode === 'edit' ? (isCode ? 'Sorotan' : 'Pratinjau') : 'Edit'}
+            {mode === 'edit' ? (isCode ? 'Sorotan' : isDiagram ? 'Hasil' : 'Pratinjau') : isDiagram ? 'Kode Mermaid' : 'Edit'}
           </button>
           <button type="button" className="ghost-button" onClick={() => void undo()} disabled={busy || viewing !== null || (!dirty && loaded.currentVersion < 2)}
             title={dirty ? 'Buang perubahan yang belum disimpan' : `Kembali ke isi v${loaded.currentVersion - 1} (dicatat sebagai versi baru)`}>
@@ -321,16 +323,17 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange }
 
       <div className="canvas-content">
         {viewing || mode === 'view' ? (
-          isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
-        ) : isCode ? (
-          <CodeTextarea value={draft} onChange={setDraft} label={`Kode ${language}`} />
+          isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
+            : isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
+        ) : isCode || isDiagram ? (
+          <CodeTextarea value={draft} onChange={setDraft} label={isDiagram ? 'Kode Mermaid' : `Kode ${language}`} />
         ) : (
           <textarea className="canvas-text" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Isi dokumen (Markdown)" spellCheck />
         )}
       </div>
 
       <footer className="canvas-foot">
-        <span className="muted">{isCode ? `Kode · ${language}` : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
+        <span className="muted">{isCode ? `Kode · ${language}` : isDiagram ? 'Diagram · Mermaid' : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
         {confirmDelete ? (
           <span className="canvas-confirm">
             Hapus artifact beserta semua versinya?
@@ -403,9 +406,9 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
     try {
       const made = await createArtifact(conversationId, {
         kind,
-        title: kind === 'dokumen' ? 'Dokumen baru' : 'Kode baru',
+        title: kind === 'dokumen' ? 'Dokumen baru' : kind === 'diagram' ? 'Diagram baru' : 'Kode baru',
         language: kind === 'kode' ? language : null,
-        content: '',
+        content: kind === 'diagram' ? DIAGRAM_STARTER : '',
       })
       await onChanged()
       onSelect(made.id)
@@ -432,7 +435,7 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
         <div className="canvas-tabs" role="tablist" aria-label="Artifact">
           {artifacts.map((a) => (
             <button key={a.id} type="button" role="tab" aria-selected={a.id === activeId} className="canvas-tab" onClick={() => onSelect(a.id)} title={a.title}>
-              <span className="canvas-tab-kind">{a.kind === 'dokumen' ? 'Dok' : 'Kode'}</span>
+              <span className="canvas-tab-kind">{kindLabel(a.kind)}</span>
               <span className="canvas-tab-title">{a.title}</span>
               {dirtyIds.has(a.id) && <span className="canvas-dirty" role="img" aria-label="Belum disimpan">•</span>}
             </button>
@@ -444,6 +447,7 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
       </header>
       <div className="canvas-new">
         <button type="button" className="ghost-button" onClick={() => void create('dokumen')} disabled={creating}>+ Dokumen</button>
+        <button type="button" className="ghost-button" onClick={() => void create('diagram')} disabled={creating}>+ Diagram</button>
         <button type="button" className="ghost-button" onClick={() => void create('kode')} disabled={creating}>+ Kode</button>
         <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
           {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}

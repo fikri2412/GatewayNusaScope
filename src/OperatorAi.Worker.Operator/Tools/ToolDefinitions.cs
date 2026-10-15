@@ -102,11 +102,11 @@ public static class ToolDefinitions
             "type": "function",
             "function": {
               "name": "buat_artifact",
-              "description": "Membuat dokumen atau potongan kode di panel Canvas (ruang kerja di samping chat) yang bisa diedit user. Gunakan untuk tulisan/kode yang panjang atau akan diedit ulang (laporan, draf, skrip), bukan untuk jawaban pendek. Isi penuh masuk ke Canvas; di chat cukup rangkum singkat apa yang dibuat.",
+              "description": "Membuat dokumen, potongan kode, atau diagram Mermaid di panel Canvas (ruang kerja di samping chat) yang bisa diedit user. Gunakan untuk tulisan/kode yang panjang atau akan diedit ulang (laporan, draf, skrip), bukan untuk jawaban pendek. Isi penuh masuk ke Canvas; di chat cukup rangkum singkat apa yang dibuat.",
               "parameters": {
                 "type": "object",
                 "properties": {
-                  "jenis": { "type": "string", "enum": ["dokumen", "kode"], "description": "dokumen = teks Markdown; kode = kode program" },
+                  "jenis": { "type": "string", "enum": ["dokumen", "kode", "diagram"], "description": "dokumen = teks Markdown; kode = kode program; diagram = sumber Mermaid (flowchart, classDiagram, erDiagram, sequenceDiagram, dst.) yang dirender di Canvas" },
                   "judul": { "type": "string", "description": "Judul singkat (maksimal 200 karakter)" },
                   "bahasa": { "type": "string", "description": "Hanya untuk jenis kode: nama bahasa huruf kecil, mis. csharp, python, sql, typescript" },
                   "isi": { "type": "string", "description": "Isi lengkap artifact (dokumen memakai Markdown)" }
