@@ -68,6 +68,7 @@ public static class ConversationEndpoints
         g.MapDelete("/{id:guid}", ConversationDeletion.HandleAsync);
         // Rute koleksi ikut dipetakan di sini supaya Program tidak perlu tahu dua grup endpoint.
         CollectionEndpoints.Map(app);
+        ArtifactEndpoints.Map(app);
     }
 
     private static async Task<IResult> CreateAsync(CreateConversationRequest? req, HttpContext http, AppDbContext db,

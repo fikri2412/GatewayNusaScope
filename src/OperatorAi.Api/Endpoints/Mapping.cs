@@ -23,6 +23,12 @@ public static class Mapping
         new(s.Id, s.Content, s.ModelAlias, s.SessionTitle, s.ConversationId, s.MessageId, Utc(s.CreatedAt),
             s.ConversationId is not null);
 
+    public static ArtifactSummaryDto ToSummary(this Artifact a) =>
+        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt));
+
+    public static ArtifactDto ToDto(this Artifact a, string content) =>
+        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt), content);
+
     public static async Task<List<MessageDto>> ToDtosAsync(this AppDbContext db, IReadOnlyList<Message> messages,
         CancellationToken ct)
     {

@@ -148,3 +148,39 @@ export interface JobDto {
   error: string | null
   createdAt: string
 }
+
+export type ArtifactKind = 'dokumen' | 'kode'
+
+/** Artifact Canvas tanpa isi: dasar tab dan kartu referensi. */
+export interface ArtifactSummary {
+  id: string
+  kind: ArtifactKind
+  title: string
+  /** Bahasa kode (mis. `csharp`); null untuk dokumen. */
+  language: string | null
+  /** Versi aktif; dikirim balik sebagai `baseVersion` saat menyimpan. */
+  currentVersion: number
+  /** Pesan user pemicu bila dibuat AI; cocok dengan `MessageDto.sourceMessageId` jawabannya. */
+  sourceMessageId: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ArtifactDto extends ArtifactSummary {
+  content: string
+}
+
+export interface ArtifactVersionInfo {
+  version: number
+  /** 'user' | 'ai' | 'restore' */
+  source: string
+  createdAt: string
+  length: number
+}
+
+export interface ArtifactVersionContent {
+  version: number
+  source: string
+  createdAt: string
+  content: string
+}

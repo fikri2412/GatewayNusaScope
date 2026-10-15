@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { logoutRemote, refreshSession } from './api/auth'
 import { api, errorMessage, SESSION_EXPIRED, setOnUnauthorized } from './api/client'
 import { clearSession, loadSession, parseThinkingModes, saveSession } from './api/session'
 import type { Session, ThinkingMode } from './api/session'
 import type { AttachmentPolicyDto, ConversationDto, ModelInfoDto } from './api/types'
 import { buildConversationMarkdown, downloadText, markdownFileName } from './exportMarkdown'
+import { artifactsForMessage } from './canvas'
+import { CanvasPanel } from './components/CanvasPanel'
 import { CollectionView } from './components/CollectionView'
 import { Composer } from './components/Composer'
 import { ConversationList } from './components/ConversationList'
@@ -13,6 +15,7 @@ import { LoginForm } from './components/LoginForm'
 import { DraftBubble, MessageBubble } from './components/MessageBubble'
 import { PendingAnswer } from './components/PendingAnswer'
 import { Brand, Icon } from './components/NusaUi'
+import { useArtifacts } from './hooks/useArtifacts'
 import { useAttachmentPolicy } from './hooks/useAttachmentPolicy'
 import { useConversation } from './hooks/useConversation'
 import { useModels } from './hooks/useModels'
@@ -36,6 +39,14 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
 }) {
   const { messages, drafts, jobs, pendingItems, error, waitingForReply, send, upload, regenerate, compare } = useConversation(conversation.id, onRefresh)
   const bottom = useRef<HTMLDivElement>(null)
+  // AI membuat artifact sebelum jawabannya tersimpan, jadi daftar dimuat ulang tiap jumlah pesan berubah.
+  const { artifacts, error: artifactsError, reload: reloadArtifacts } = useArtifacts(conversation.id, messages.length)
+  const [canvasOpen, setCanvasOpen] = useState(false)
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
+  const openArtifact = (id: string) => {
+    setActiveArtifactId(id)
+    setCanvasOpen(true)
+  }
   // Draft tanpa teks belum perlu bubble; jumlah karakter yang berubah menggeser tampilan agar teks baru tetap terlihat.
   const visibleDrafts = drafts.filter((d) => d.text.length > 0 || d.state !== 'streaming')
   useEffect(() => {
@@ -57,6 +68,9 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
         </button>
         <h1 className="chat-title">{conversation.title ?? 'Sesi baru'}</h1>
         <div className="chat-header-actions">
+          <button type="button" className="ghost-button" onClick={() => setCanvasOpen((open) => !open)} aria-pressed={canvasOpen} title="Buka atau tutup Canvas">
+            Canvas{artifacts.length > 0 ? ` (${artifacts.length})` : ''}
+          </button>
           <button type="button" className="ghost-button" onClick={exportMarkdown} disabled={messages.length === 0} title="Unduh percakapan sebagai Markdown">
             Ekspor .md
           </button>
@@ -69,19 +83,32 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
           </button>
         </div>
       </header>
+      <div className={canvasOpen ? 'workspace with-canvas' : 'workspace'}>
       <main className="chat" aria-label={conversation.title ?? 'Sesi baru'}>
         {error && <p className="error" role="alert">{error}</p>}
+        {artifactsError && <p className="error" role="alert">Canvas: {artifactsError}</p>}
         <div className="messages">
           {messages.length === 0 && visibleDrafts.length === 0 && <p className="muted">Belum ada pesan. Tulis sesuatu untuk memulai.</p>}
           {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              conversationId={conversation.id}
-              turnPending={waitingForReply}
-              onRegenerate={regenerate}
-              onCompare={compare}
-            />
+            <Fragment key={m.id}>
+              <MessageBubble
+                message={m}
+                conversationId={conversation.id}
+                turnPending={waitingForReply}
+                onRegenerate={regenerate}
+                onCompare={compare}
+              />
+              {artifactsForMessage(m, artifacts).length > 0 && (
+                <div className="artifact-cards">
+                  {artifactsForMessage(m, artifacts).map((a) => (
+                    <button key={a.id} type="button" className="artifact-card" onClick={() => openArtifact(a.id)}>
+                      <span className="artifact-card-title">{a.title}</span>
+                      <span className="artifact-card-meta">{a.kind === 'dokumen' ? 'Dokumen' : `Kode · ${a.language ?? 'text'}`} · v{a.currentVersion} · Buka di Canvas</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Fragment>
           ))}
           {/* Tiket alternatif (jawab ulang/bandingkan) belum punya pesan apa pun; tiket biasa tampil sebagai indikator tunggu. */}
           {pendingItems.filter((item) => item.isAlternative).map((item) => <PendingAnswer key={item.queueItemId} item={item} />)}
@@ -116,6 +143,16 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
           }}
         />
       </main>
+      <CanvasPanel
+        conversationId={conversation.id}
+        artifacts={artifacts}
+        activeId={activeArtifactId}
+        open={canvasOpen}
+        onSelect={setActiveArtifactId}
+        onClose={() => setCanvasOpen(false)}
+        onChanged={reloadArtifacts}
+      />
+      </div>
     </>
   )
 }

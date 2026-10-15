@@ -12,7 +12,8 @@
     "check:markdown": "node src/markdown.check.ts",
     "check:export": "node src/exportMarkdown.check.ts",
     "check:thinking": "node src/thinkingModes.check.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:canvas": "node src/canvas.check.ts"
   },
   "dependencies": {
     "@microsoft/signalr": "^10.0.11",
