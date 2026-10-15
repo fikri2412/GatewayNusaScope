@@ -44,6 +44,7 @@ internal static class FamilyAdapters
 internal abstract class ChatChunkReader(TextReader upstream) : TextReader
 {
     private readonly Queue<string> _lines = new();
+    private readonly SseDataAssembler _assembler = new();
     private bool _done;
     private readonly long _created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
@@ -82,11 +83,16 @@ internal abstract class ChatChunkReader(TextReader upstream) : TextReader
     /// <summary>Terjemahkan satu baris mentah upstream; hasilnya antre untuk <see cref="ReadLineAsync(CancellationToken)"/>.</summary>
     public void Feed(string raw)
     {
-        if (_done || !SsePump.TryGetData(raw, out var payload)) return; // event:, id:, komentar, baris kosong
-        JsonObject? e;
-        try { e = JsonNode.Parse(payload) as JsonObject; }
-        catch (JsonException) { return; }
-        if (e is not null) OnEvent(e);
+        if (_done) return;
+        if (raw.Length == 0)
+        {
+            _assembler.Clear(); // batas event: sisa JSON yang tak pernah lengkap dibuang, seperti baris tak valid sebelumnya
+            return;
+        }
+        if (!SsePump.TryGetData(raw, out var payload)) return; // event:, id:, komentar
+        // JSON yang terpecah di beberapa baris data: digabung (GA-05); satu baris utuh tetap diproses seketika.
+        if (_assembler.Offer(raw, payload, out _) is { } e) OnEvent(e);
+        if (_assembler.Overflowed) _assembler.Clear();
     }
 
     /// <summary>Baris terjemahan yang sudah antre (dipakai untuk event pertama yang dibaca sebelum commit).</summary>

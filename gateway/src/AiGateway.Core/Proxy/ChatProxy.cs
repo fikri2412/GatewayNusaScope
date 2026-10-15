@@ -442,16 +442,20 @@ public sealed class ChatProxy(
 
     private static bool FirstEventIsError(List<string> lines)
     {
+        // Data event pertama bisa terpecah di beberapa baris data: (spesifikasi SSE menggabungkannya dengan \n).
+        var payloads = new List<string>();
         foreach (var line in lines)
         {
-            if (!SsePump.TryGetData(line, out var payload)) continue;
-            if (payload.Trim() == "[DONE]") return false;
-            var first = ParseObject(payload);
-            // Chat/Anthropic: objek "error"; Responses: event type "error" atau "response.failed".
-            var type = first?["type"] is JsonValue t && t.TryGetValue<string>(out var s) ? s : null;
-            return first?["error"] is JsonObject || type is "error" or "response.failed";
+            if (line.Length == 0 && payloads.Count > 0) break;
+            if (SsePump.TryGetData(line, out var p)) payloads.Add(p);
         }
-        return false;
+        if (payloads.Count == 0) return false;
+        if (payloads[0].Trim() == "[DONE]") return false;
+        // Gabungan valid dipakai bila ada; selain itu perilaku lama: hanya baris data pertama.
+        var first = (payloads.Count > 1 ? ParseObject(string.Join('\n', payloads)) : null) ?? ParseObject(payloads[0]);
+        // Chat/Anthropic: objek "error"; Responses: event type "error" atau "response.failed".
+        var type = first?["type"] is JsonValue t && t.TryGetValue<string>(out var s) ? s : null;
+        return first?["error"] is JsonObject || type is "error" or "response.failed";
     }
 
     /// <summary>Penagihan stream bergantung pada chunk usage terakhir; minta upstream mengirimnya.</summary>

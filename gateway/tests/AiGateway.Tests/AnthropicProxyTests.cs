@@ -108,6 +108,35 @@ public class AnthropicProxyTests(TestDb db) : FamilyProxyTestBase(db)
         Assert.Equal((UsageStatuses.Ok, 14, 7, 4, "tool_calls"), (log.Status, log.InputTokens, log.OutputTokens, log.CachedTokens, log.FinishReason));
     }
 
+    /// <summary>Event Anthropic dengan JSON dipecah di beberapa baris data: (hanya untuk JSON tanpa koma di dalam string).</summary>
+    private static string MultiLineEvent(string type, string json) => $"event: {type}\ndata: " + json.Replace(",", ",\ndata: ") + "\n\n";
+
+    [Fact]
+    public async Task Translates_stream_events_whose_data_is_split_over_several_lines()
+    {
+        var s = await SetupAnthropicAsync();
+        Upstream.Respond = _ => Sse(
+            MultiLineEvent("message_start", """{"type":"message_start","message":{"id":"msg_1","model":"real-model","usage":{"input_tokens":10,"output_tokens":1}}}""")
+            + MultiLineEvent("content_block_start", """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""")
+            + MultiLineEvent("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ha"}}""")
+            + MultiLineEvent("content_block_stop", """{"type":"content_block_stop","index":0}""")
+            + MultiLineEvent("message_delta", """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}""")
+            + MultiLineEvent("message_stop", """{"type":"message_stop"}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+        var chunks = raw.Split('\n').Where(l => l.StartsWith("data: ") && l != "data: [DONE]").Select(l => JsonNode.Parse(l[6..])!).ToList();
+        Assert.Equal("ha", string.Concat(chunks.Select(c => (string?)c["choices"]!.AsArray().FirstOrDefault()?["delta"]?["content"])));
+        Assert.Contains(chunks, c => (string?)c["choices"]!.AsArray().FirstOrDefault()?["finish_reason"] == "stop");
+
+        await using var ctx = Db.NewContext(s.TenantId);
+        var log = await ctx.UsageLogs.SingleAsync();
+        Assert.Equal((UsageStatuses.Ok, 10, 7, "stop"), (log.Status, log.InputTokens, log.OutputTokens, log.FinishReason));
+    }
+
     [Fact]
     public async Task Keeps_inline_image_parts_and_rejects_image_sources_the_gateway_would_not_forward()
     {
