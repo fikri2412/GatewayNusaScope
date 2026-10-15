@@ -85,7 +85,7 @@ public sealed class OpenCodeCatalogSync(
                 var existing = await db.CatalogModels.Where(m => m.TemplateId == template.Id).ToDictionaryAsync(m => m.UpstreamModel, ct);
                 foreach (var m in provider.Models)
                 {
-                    if (m.ApiFamily != ApiFamilies.OpenAiChat) unsupported++;
+                    if (!ApiFamilies.Forwardable.Contains(m.ApiFamily)) unsupported++;
                     if (existing.TryGetValue(m.Id, out var row))
                     {
                         if (row.Source == CatalogSources.Manual) { skipped++; continue; }

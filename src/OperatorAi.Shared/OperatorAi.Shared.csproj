@@ -7,11 +7,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.20" />
     <PackageReference Include="Dapper" Version="2.*" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.*" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="9.*" />
-    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="9.*" />
+    <!-- 9.0.20 pinned (NuGet lower bound) on Microsoft.EntityFrameworkCore.SqlServer and Microsoft.Extensions.Options.DataAnnotations. OperatorAi.Api pins Identity.Core and EF Core Design at 9.0.20; keep all four in step, a mismatch fails with CS1705. -->
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="9.0.20" />
+    <PackageReference Include="SkiaSharp" Version="3.119.1" />
   </ItemGroup>
 
 </Project>

@@ -130,6 +130,66 @@ public class ProvisioningAdminTests(TestDb db) : GatewayTestBase(db)
     }
 
     [Fact]
+    public async Task Model_capabilities_are_confirmed_in_three_states_and_reset_when_route_targets_change()
+    {
+        var s = await SetupAsync(); // route awal: provider asli -> real-model
+        await InTenantAsync(s, async (prov, ctx) =>
+        {
+            var fresh = await ctx.Models.SingleAsync(m => m.Id == s.ModelId);
+            Assert.Equal((null, null, null), (fresh.SupportsTools, fresh.SupportsStreaming, fresh.SupportsVision)); // baris lama/baru: belum dikonfirmasi
+
+            var confirmed = await prov.UpdateModelAsync(s.ModelId, new ModelPatch(SupportsTools: true, SupportsStreaming: false, SupportsVision: true), default);
+            Assert.Equal((true, false, true), (confirmed.SupportsTools, confirmed.SupportsStreaming, confirmed.SupportsVision));
+
+            var cleared = await prov.UpdateModelAsync(s.ModelId, new ModelPatch(ClearSupportsTools: true, SupportsStreaming: true), default);
+            Assert.Equal((null, true, true), (cleared.SupportsTools, cleared.SupportsStreaming, cleared.SupportsVision));
+            cleared = await prov.UpdateModelAsync(s.ModelId, new ModelPatch(ClearSupportsVision: true), default);
+            Assert.Equal((null, true, null), (cleared.SupportsTools, cleared.SupportsStreaming, cleared.SupportsVision));
+
+            await prov.UpdateModelAsync(s.ModelId, new ModelPatch(SupportsTools: true, SupportsVision: true), default);
+            // Prioritas/weight berbeda tapi target sama: konfirmasi tetap melekat.
+            await prov.ReplaceRoutesAsync(s.ModelId, [new RouteSpec(s.ProviderId, "real-model", Priority: 1, Weight: 2)], default);
+            Assert.Equal((true, true, true), (confirmed.SupportsTools, confirmed.SupportsStreaming, confirmed.SupportsVision));
+
+            // Target berubah (upstream model lain): semua konfirmasi dikosongkan.
+            await prov.ReplaceRoutesAsync(s.ModelId, [new RouteSpec(s.ProviderId, "other-model")], default);
+            Assert.Equal((null, null, null), (confirmed.SupportsTools, confirmed.SupportsStreaming, confirmed.SupportsVision));
+            return 0;
+        });
+
+        await using var check = Db.NewContext(s.TenantId);
+        var stored = await check.Models.SingleAsync(m => m.Id == s.ModelId);
+        Assert.Equal((null, (bool?)null, (bool?)null), (stored.SupportsTools, stored.SupportsStreaming, stored.SupportsVision));
+    }
+
+    [Fact]
+    public async Task A_provider_target_change_resets_capability_confirmations_of_routed_models()
+    {
+        var s = await SetupAsync();
+        await InTenantAsync(s, async (prov, _) =>
+        {
+            var spare = await prov.CreateCustomProviderAsync("spare", "https://spare.test/v1", "key-for-spare-000003", null, null, null, default);
+            var model = await prov.UpdateModelAsync(s.ModelId, new ModelPatch(SupportsTools: true, SupportsStreaming: true, SupportsVision: true), default);
+            var spareModel = await prov.CreateModelAsync(new ModelSpec("spare-model", "spare-model", SupportsTools: true, SupportsVision: true), [new RouteSpec(spare.Id, "spare-model")], default);
+
+            // Nama provider, header auth, dan rotasi key bukan perubahan target upstream.
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(Name: "renamed", AuthPrefix: "Token "), default);
+            await prov.RotateProviderKeyAsync(s.ProviderId, "key-for-rotated-0001", default);
+            Assert.Equal((true, true, true), (model.SupportsTools, model.SupportsStreaming, model.SupportsVision));
+
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1"), default);
+            Assert.Equal((null, null, null), (model.SupportsTools, model.SupportsStreaming, model.SupportsVision)); // target berubah: konfirmasi hangus
+            Assert.Equal((true, null, true), (spareModel.SupportsTools, spareModel.SupportsStreaming, spareModel.SupportsVision)); // route ke provider lain utuh
+
+            // Mengirim ulang BaseUrl yang sama bukan perubahan: konfirmasi bertahan.
+            await prov.UpdateModelAsync(s.ModelId, new ModelPatch(SupportsTools: false, SupportsStreaming: true, SupportsVision: false), default);
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1"), default);
+            Assert.Equal((false, true, false), (model.SupportsTools, model.SupportsStreaming, model.SupportsVision));
+            return 0;
+        });
+    }
+
+    [Fact]
     public async Task Suspending_a_project_blocks_traffic_and_deleting_it_revokes_its_keys()
     {
         var s = await SetupAsync();

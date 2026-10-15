@@ -19,7 +19,7 @@ public sealed class CurrentActor
 /// ponytail: ditulis setelah mutasi selesai, bukan dalam transaksi yang sama; kegagalan hanya dilog (level Error)
 /// supaya aksi yang sudah berhasil tidak ikut gagal.
 /// </summary>
-public sealed class AuditWriter(GatewayDbContext db, CurrentActor actor, ILogger<AuditWriter> log)
+public sealed class AuditWriter(GatewayDbContext db, CurrentActor actor, PlatformDb platform, ILogger<AuditWriter> log)
 {
     public async Task WriteAsync(
         string action, string? entity = null, string? entityId = null, object? detail = null,
@@ -39,32 +39,33 @@ public sealed class AuditWriter(GatewayDbContext db, CurrentActor actor, ILogger
         // Predikat RLS audit_logs menolak baris yang tenant-nya bukan tenant sesi. Endpoint anonim (login)
         // belum memasang konteks tenant padahal barisnya milik tenant user, jadi konteks dipasang untuk
         // penulisan ini lalu dipulihkan agar tidak mengubah query lain di request yang sama.
-        // ponytail: aksi tingkat platform (dan login gagal/accept-invite) menulis tenant_id NULL; baris itu
-        // tetap ditolak predikat RLS saat aplikasi memakai principal gateway_app. Hanya koneksi principal
-        // gateway_platform yang boleh menulisnya dan plane platform HTTP belum punya koneksi itu
-        // (upgrade path di DECISIONS G4). Predikat tidak dilonggarkan untuk NULL: tenant akan bisa
-        // memalsukan baris audit tingkat platform.
-        var previous = db.CurrentTenantId;
+        // Baris tanpa tenant (aksi platform, login platform admin, login gagal, accept-invite) hanya lolos bila
+        // ditulis principal gateway_platform, jadi ditulis lewat koneksi itu. Predikat tidak dilonggarkan untuk
+        // NULL: tenant akan bisa memalsukan baris audit tingkat platform. Tanpa ConnectionStrings:GatewayPlatform
+        // (dev/test, RLS belum dipasang) baris itu memakai koneksi request; dengan RLS aktif ia ditolak dan hanya dilog.
+        await using var platformDb = row.TenantId is null && platform.IsSeparate ? platform.CreateContext() : null;
+        var target = platformDb ?? db;
+        var previous = target.CurrentTenantId;
         var switched = false;
         if (row.TenantId is { } rowTenant && rowTenant != previous)
         {
-            db.CurrentTenantId = rowTenant;
+            target.CurrentTenantId = rowTenant;
             switched = true;
         }
 
         try
         {
-            db.AuditLogs.Add(row);
-            await db.SaveChangesAsync();
+            target.AuditLogs.Add(row);
+            await target.SaveChangesAsync();
         }
         catch (Exception ex)
         {
-            db.Entry(row).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+            target.Entry(row).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
             log.LogError(ex, "Gagal menulis audit log {Action}", action);
         }
         finally
         {
-            if (switched) db.CurrentTenantId = previous;
+            if (switched) target.CurrentTenantId = previous;
         }
     }
 }

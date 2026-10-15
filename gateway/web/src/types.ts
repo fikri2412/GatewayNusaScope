@@ -78,6 +78,8 @@ export interface UsageRow {
   inputTokens: number
   outputTokens: number
   cost: number
+  /** Jumlah request yang usage-nya belum lengkap: token diketahui, biaya bukan tagihan final. */
+  incompleteUsageRequests: number
 }
 
 export interface UsageLogItem {
@@ -99,6 +101,8 @@ export interface UsageLogItem {
   attempts: number
   fallbackUsed: boolean
   endUser: string | null
+  /** True bila usage belum lengkap: token batas bawah, biaya tercatat bukan tagihan final. */
+  usageIncomplete: boolean
 }
 
 export interface Page<T> {
@@ -117,6 +121,44 @@ export interface AuditItem {
   detailJson: string | null
   ip: string | null
   createdAt: string
+}
+
+// Web Search Provider Hub (/admin/providers).
+export interface SearchProviderDto {
+  id: string
+  name: string
+  type: string
+  baseUri: string
+  keyHint: string
+  isEnabled: boolean
+  weight: number
+  capabilities: string
+  monthlyBudget: number | null
+  costPerSearch: number
+  costPerExtract: number
+  resetPolicy: string
+  errorMappingOverride: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SearchProviderStatusDto {
+  id: string
+  name: string
+  type: string
+  status: string
+  unavailableUntil: string | null
+  usedThisPeriod: number
+  monthlyBudget: number | null
+  estimatedRemainingCredits: number | null
+  nextRetryTime: string | null
+  lastError: string | null
+  consecutiveFailures: number
+  successCount: number
+  failureCount: number
+  failoverCount: number
+  lastSuccessAt: string | null
+  updatedAt: string
 }
 
 // Providers & models (existing endpoints).
@@ -170,6 +212,9 @@ export interface ModelDto {
   routes: RouteDto[]
   price: PriceDto | null
   createdAt: string
+  supportsTools: boolean | null
+  supportsStreaming: boolean | null
+  supportsVision: boolean | null
 }
 
 export interface TemplateDto {
@@ -310,3 +355,75 @@ export interface UsageBodyDto {
 
 export const ALERT_METRICS = ['daily_tokens', 'monthly_tokens', 'monthly_budget']
 export const ALERT_SCOPES = ['tenant', 'project', 'key']
+
+// G6 settings: key/value per tenant.
+export type SettingType = 'int' | 'bool' | 'text'
+
+export interface SettingDto {
+  namespace: string
+  key: string
+  value: string
+  valueType: SettingType
+  description: string | null
+  updatedAt: string
+}
+
+export const SETTING_TYPES: SettingType[] = ['int', 'bool', 'text']
+
+// Laporan status aplikasi klien (monitoring G6/6A1) — POST /client/api/app-status, GET /admin/api/app-status.
+export type AppStatusSync = 'local' | 'synced' | 'rejected' | 'last-known-good'
+
+export interface AppStatusSupportedKey {
+  key: string
+  valueType: SettingType
+  min: number | null
+  max: number | null
+  maxLength: number | null
+  allowedValues: string[] | null
+  description: string | null
+  redacted: boolean
+}
+
+export interface AppStatusCounts {
+  pending: number
+  processing: number
+  done: number
+  failed: number
+}
+
+export interface AppStatusPolicyGroup {
+  policyHash: string
+  queueItems: number
+  jobs: number
+}
+
+export interface AppStatusItem {
+  id: number
+  apiKeyId: string | null
+  apiKeyName: string | null
+  namespace: string
+  configuredVersion: string | null
+  receivedAt: string
+  stale: boolean
+  sourceSettingsVersion: string | null
+  policyHash: string
+  promptHash: string
+  effectiveValues: Record<string, string>
+  supportedKeys: AppStatusSupportedKey[]
+  syncStatus: AppStatusSync
+  lastConfigSuccessAt: string | null
+  rejectedKeys: string[]
+  ignoredKeys: string[]
+  reason: string | null
+  queue: AppStatusCounts
+  jobs: AppStatusCounts
+  activePolicies: AppStatusPolicyGroup[]
+  reportIntervalSeconds: number
+  observedAt: string
+}
+
+export interface AppStatusList {
+  namespace: string | null
+  configuredVersion: string | null
+  items: AppStatusItem[]
+}

@@ -6,7 +6,8 @@ using Microsoft.EntityFrameworkCore;
 namespace AiGateway.Core.Reports;
 
 public sealed record UsageRow(
-    string Key, string Label, long Requests, long Denied, long Errors, long InputTokens, long OutputTokens, decimal Cost);
+    string Key, string Label, long Requests, long Denied, long Errors, long InputTokens, long OutputTokens, decimal Cost,
+    long IncompleteUsageRequests);
 
 public sealed record UsageFilter(
     DateTime From, DateTime To, long? ProjectId = null, long? ApiKeyId = null, long? ModelId = null, string? Status = null);
@@ -14,7 +15,7 @@ public sealed record UsageFilter(
 public sealed record UsageLogRow(
     long Id, DateTime CreatedAt, Guid RequestId, long ProjectId, long ApiKeyId, long? ModelId, string Status, int HttpStatus,
     string? DeniedReason, int InputTokens, int OutputTokens, int CachedTokens, int ReasoningTokens, decimal Cost, int LatencyMs,
-    int Attempts, bool FallbackUsed, string? EndUser, string? Tags);
+    int Attempts, bool FallbackUsed, string? EndUser, string? Tags, bool UsageIncomplete);
 
 public sealed record Page<T>(IReadOnlyList<T> Items, int Total, int PageNumber, int PageSize);
 
@@ -38,11 +39,12 @@ public sealed class UsageReports(GatewayDbContext db)
                 {
                     g.Key, Requests = g.Sum(u => u.Requests), Denied = g.Sum(u => u.Denied), Errors = g.Sum(u => u.Errors),
                     In = g.Sum(u => u.InputTokens), Out = g.Sum(u => u.OutputTokens), Cost = g.Sum(u => u.Cost),
+                    Incomplete = g.Sum(u => u.IncompleteUsageRequests),
                 }).ToListAsync(ct);
                 return days.OrderBy(d => d.Key).Select(d =>
                 {
                     var label = d.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                    return new UsageRow(label, label, d.Requests, d.Denied, d.Errors, d.In, d.Out, d.Cost);
+                    return new UsageRow(label, label, d.Requests, d.Denied, d.Errors, d.In, d.Out, d.Cost, d.Incomplete);
                 }).ToList();
             case "project":
                 return Label(await GroupByLongAsync(q, u => u.ProjectId, ct),
@@ -68,9 +70,10 @@ public sealed class UsageReports(GatewayDbContext db)
         {
             g.Key, Requests = g.Sum(u => u.Requests), Denied = g.Sum(u => u.Denied), Errors = g.Sum(u => u.Errors),
             In = g.Sum(u => u.InputTokens), Out = g.Sum(u => u.OutputTokens), Cost = g.Sum(u => u.Cost),
+            Incomplete = g.Sum(u => u.IncompleteUsageRequests),
         }).ToListAsync(ct);
         return rows.Select(r => new UsageRow(r.Key.ToString(CultureInfo.InvariantCulture), r.Key.ToString(CultureInfo.InvariantCulture),
-            r.Requests, r.Denied, r.Errors, r.In, r.Out, r.Cost)).ToList();
+            r.Requests, r.Denied, r.Errors, r.In, r.Out, r.Cost, r.Incomplete)).ToList();
     }
 
     private static List<UsageRow> Label(List<UsageRow> rows, Dictionary<string, string> names) =>
@@ -115,7 +118,8 @@ public sealed class UsageReports(GatewayDbContext db)
 
     private static readonly System.Linq.Expressions.Expression<Func<Domain.UsageLog, UsageLogRow>> Row = l => new UsageLogRow(
         l.Id, l.CreatedAt, l.RequestId, l.ProjectId, l.ApiKeyId, l.ModelId, l.Status, l.HttpStatus, l.DeniedReason,
-        l.InputTokens, l.OutputTokens, l.CachedTokens, l.ReasoningTokens, l.Cost, l.LatencyMs, l.Attempts, l.FallbackUsed, l.EndUser, l.Tags);
+        l.InputTokens, l.OutputTokens, l.CachedTokens, l.ReasoningTokens, l.Cost, l.LatencyMs, l.Attempts, l.FallbackUsed, l.EndUser, l.Tags,
+        l.UsageIncomplete);
 
     public static string Csv(string? value)
     {

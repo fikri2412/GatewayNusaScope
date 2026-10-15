@@ -42,10 +42,11 @@ public sealed record PolicyRequest(
     long? MonthlyTokenQuota = null, decimal? MonthlyBudget = null, string[]? AllowedModels = null, bool? Enabled = null);
 
 /// <summary>Baris log tanpa id internal: project/key/model dikembalikan sebagai GUID publik (NULL bila tidak resolvable).</summary>
+/// <param name="UsageIncomplete">True bila usage belum lengkap: token diketahui adalah batas bawah, biaya tercatat bukan tagihan final.</param>
 public sealed record UsageLogItem(
     long Id, DateTime CreatedAt, Guid RequestId, Guid? ProjectId, Guid? KeyId, Guid? ModelId, string Status, int HttpStatus,
     string? DeniedReason, int InputTokens, int OutputTokens, int CachedTokens, int ReasoningTokens, decimal Cost, int LatencyMs,
-    int Attempts, bool FallbackUsed, string? EndUser);
+    int Attempts, bool FallbackUsed, string? EndUser, bool UsageIncomplete);
 
 public sealed record UsageLogPage(IReadOnlyList<UsageLogItem> Items, int Total, int PageNumber, int PageSize);
 
@@ -347,7 +348,7 @@ public static class AdminResourceEndpoints
             keys.TryGetValue(i.ApiKeyId, out var k) ? k : null,
             i.ModelId is { } m && models.TryGetValue(m, out var model) ? model : null,
             i.Status, i.HttpStatus, i.DeniedReason, i.InputTokens, i.OutputTokens, i.CachedTokens, i.ReasoningTokens,
-            i.Cost, i.LatencyMs, i.Attempts, i.FallbackUsed, i.EndUser)).ToList();
+            i.Cost, i.LatencyMs, i.Attempts, i.FallbackUsed, i.EndUser, i.UsageIncomplete)).ToList();
         return new UsageLogPage(items, page.Total, page.PageNumber, page.PageSize);
     }
 
@@ -370,7 +371,7 @@ public static class AdminResourceEndpoints
         http.Response.ContentType = "text/csv; charset=utf-8";
         http.Response.Headers["Content-Disposition"] = "attachment; filename=\"usage.csv\"";
         await using var writer = new StreamWriter(http.Response.Body, new UTF8Encoding(false), leaveOpen: true);
-        await writer.WriteLineAsync("id,created_at,request_id,project_id,api_key_id,model_id,status,http_status,denied_reason,input_tokens,output_tokens,cached_tokens,reasoning_tokens,cost,latency_ms,attempts,fallback_used,end_user,tags");
+        await writer.WriteLineAsync("id,created_at,request_id,project_id,api_key_id,model_id,status,http_status,denied_reason,input_tokens,output_tokens,cached_tokens,reasoning_tokens,cost,latency_ms,attempts,fallback_used,end_user,tags,usage_incomplete");
         var pageNumber = 1;
         var written = 0;
         while (written < UsageReports.MaxExportRows)
@@ -385,7 +386,7 @@ public static class AdminResourceEndpoints
                     l.Id, l.CreatedAt.ToString("O", CultureInfo.InvariantCulture), l.RequestId, l.ProjectId, l.KeyId, l.ModelId,
                     UsageReports.Csv(l.Status), l.HttpStatus, UsageReports.Csv(l.DeniedReason), l.InputTokens, l.OutputTokens,
                     l.CachedTokens, l.ReasoningTokens, l.Cost.ToString(CultureInfo.InvariantCulture), l.LatencyMs, l.Attempts,
-                    l.FallbackUsed, UsageReports.Csv(l.EndUser), UsageReports.Csv(page.Items[i].Tags)));
+                    l.FallbackUsed, UsageReports.Csv(l.EndUser), UsageReports.Csv(page.Items[i].Tags), l.UsageIncomplete));
             }
             if ((long)pageNumber * page.PageSize >= page.Total) break;
             pageNumber++;

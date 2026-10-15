@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace AiGateway.Tests;
 
@@ -43,19 +44,44 @@ public sealed class FakeUpstream : HttpMessageHandler
     }
 }
 
+/// <summary>Menangkap pesan log host untuk asersi "rahasia/provider body tidak pernah masuk log".</summary>
+public sealed class CollectingLoggerProvider : Microsoft.Extensions.Logging.ILoggerProvider
+{
+    private readonly ConcurrentQueue<string> _messages = new();
+    public IReadOnlyCollection<string> Messages => _messages;
+
+    public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new CollectingLogger(_messages);
+    public void Dispose() { }
+
+    private sealed class CollectingLogger(ConcurrentQueue<string> messages) : Microsoft.Extensions.Logging.ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter) =>
+            messages.Enqueue(formatter(state, exception));
+    }
+}
+
 /// <summary>
 /// Host gateway sungguhan di atas database uji, dengan upstream palsu dan IP klien yang bisa diatur lewat header.
 /// Flag rls menyalakan lapis kedua (script tenant-security.sql dipasang sebelum host start); parameter
 /// authRequestsPerMinute menurunkan batas rate limit endpoint auth bila test memang mengujinya.
 /// </summary>
 public sealed class GatewayFactory(
-    string connectionString, FakeUpstream upstream, bool rls = false, int authRequestsPerMinute = 100_000)
+    string connectionString, FakeUpstream upstream, bool rls = false, int authRequestsPerMinute = 100_000,
+    Action<IServiceCollection>? configureServices = null)
     : WebApplicationFactory<Program>
 {
+    public CollectingLoggerProvider Logs { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // Satu database per test class, jadi memasang RLS di sini tidak menyentuh test class lain.
         if (rls) TestDb.InstallTenantSecurityScript(connectionString);
+        builder.ConfigureLogging(logging => logging.AddProvider(Logs));
         builder.UseSetting("ConnectionStrings:Gateway", connectionString);
         builder.UseSetting("Seed:AdminEmail", "test-admin@example.test");
         builder.UseSetting("Seed:AdminPassword", "test-password-123456");
@@ -66,7 +92,13 @@ public sealed class GatewayFactory(
         builder.ConfigureTestServices(services =>
         {
             services.AddHttpClient(ChatProxy.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => upstream);
+            // Adapter pencarian web memakai klien bernama; arahkan ke upstream palsu yang sama supaya endpoint
+            // /v1/search, /v1/extract, dan /admin/providers/{id}/test teruji tanpa jaringan.
+            services.AddHttpClient("SearchProvider.tavily").ConfigurePrimaryHttpMessageHandler(() => upstream);
+            services.AddHttpClient("SearchProvider.exa").ConfigurePrimaryHttpMessageHandler(() => upstream);
+            services.AddHttpClient("SearchProvider.firecrawl").ConfigurePrimaryHttpMessageHandler(() => upstream);
             services.AddTransient<IStartupFilter, TestIpStartupFilter>();
+            configureServices?.Invoke(services);
         });
     }
 
@@ -94,10 +126,11 @@ public abstract class GatewayTestBase : IClassFixture<TestDb>, IDisposable
     protected readonly GatewayFactory Factory;
     protected readonly HttpClient Client;
 
-    protected GatewayTestBase(TestDb db, bool rls = false, int authRequestsPerMinute = 100_000)
+    protected GatewayTestBase(
+        TestDb db, bool rls = false, int authRequestsPerMinute = 100_000, Action<IServiceCollection>? configureServices = null)
     {
         Db = db;
-        Factory = new GatewayFactory(db.ConnectionString, Upstream, rls, authRequestsPerMinute);
+        Factory = new GatewayFactory(db.ConnectionString, Upstream, rls, authRequestsPerMinute, configureServices);
         Client = Factory.CreateClient();
     }
 

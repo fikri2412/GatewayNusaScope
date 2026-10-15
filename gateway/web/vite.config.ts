@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: true,
-    proxy: { '/admin/api': 'http://localhost:5090', '/platform/api': 'http://localhost:5090' },
+    proxy: { '/admin/api': 'https://localhost:44387', '/platform/api': 'https://localhost:44387' },
   },
   // Hasil build dilayani langsung oleh AiGateway.Api.
   build: { outDir: '../src/AiGateway.Api/wwwroot', emptyOutDir: true },

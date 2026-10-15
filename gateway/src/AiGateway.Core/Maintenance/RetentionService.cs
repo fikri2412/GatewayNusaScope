@@ -32,6 +32,7 @@ public sealed class RetentionService(
                    COUNT_BIG(*) AS requests,
                    COUNT_BIG(CASE WHEN status = 'denied' THEN 1 END) AS denied,
                    COUNT_BIG(CASE WHEN status = 'error' THEN 1 END) AS errors,
+                   COUNT_BIG(CASE WHEN usage_incomplete = 1 THEN 1 END) AS incomplete_usage_requests,
                    SUM(CAST(input_tokens AS bigint)) AS input_tokens,
                    SUM(CAST(output_tokens AS bigint)) AS output_tokens,
                    SUM(cost) AS cost
@@ -42,9 +43,10 @@ public sealed class RetentionService(
         ON t.tenant_id = s.tenant_id AND t.project_id = s.project_id AND t.api_key_id = s.api_key_id
            AND t.model_id = s.model_id AND t.day = @day
         WHEN MATCHED THEN UPDATE SET requests = s.requests, denied = s.denied, errors = s.errors,
-             input_tokens = s.input_tokens, output_tokens = s.output_tokens, cost = s.cost
-        WHEN NOT MATCHED THEN INSERT (tenant_id, project_id, api_key_id, model_id, day, requests, denied, errors, input_tokens, output_tokens, cost)
-             VALUES (s.tenant_id, s.project_id, s.api_key_id, s.model_id, @day, s.requests, s.denied, s.errors, s.input_tokens, s.output_tokens, s.cost);
+             input_tokens = s.input_tokens, output_tokens = s.output_tokens, cost = s.cost,
+             incomplete_usage_requests = s.incomplete_usage_requests
+        WHEN NOT MATCHED THEN INSERT (tenant_id, project_id, api_key_id, model_id, day, requests, denied, errors, input_tokens, output_tokens, cost, incomplete_usage_requests)
+             VALUES (s.tenant_id, s.project_id, s.api_key_id, s.model_id, @day, s.requests, s.denied, s.errors, s.input_tokens, s.output_tokens, s.cost, s.incomplete_usage_requests);
         """;
 
     public async Task<RetentionOutcome> RunAsync(CancellationToken ct)

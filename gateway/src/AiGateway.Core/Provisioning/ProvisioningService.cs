@@ -21,7 +21,7 @@ public sealed record ModelSpec(
     string Alias, string UpstreamModel, int? MaxOutputTokens = null,
     decimal? InputPricePer1M = null, decimal? OutputPricePer1M = null, string Currency = "USD",
     decimal? CacheReadPricePer1M = null, decimal? CacheWritePricePer1M = null, IReadOnlyList<PriceTier>? Tiers = null,
-    string? Description = null);
+    string? Description = null, bool? SupportsTools = null, bool? SupportsStreaming = null, bool? SupportsVision = null);
 
 /// <summary>Kebijakan satu scope. NULL = tidak dibatasi; <see cref="AllowedModels"/> NULL = semua model.</summary>
 public sealed record PolicySpec(
@@ -187,14 +187,15 @@ public sealed partial class ProvisioningService(
         if (provider.TemplateId is null)
             throw GatewayException.BadRequest("no_catalog", "Provider custom tidak punya katalog; gunakan discover atau daftar manual.");
 
-        // Gateway baru bisa meneruskan Chat Completions; keluarga lain disimpan di katalog tapi tidak ditawarkan.
+        // Hanya keluarga yang bisa diteruskan gateway (ApiFamilies.Forwardable) yang ditawarkan; sisanya hanya ada di katalog.
         var query = db.CatalogModels.AsNoTracking()
-            .Where(m => m.TemplateId == provider.TemplateId && m.Enabled && m.ApiFamily == ApiFamilies.OpenAiChat);
+            .Where(m => m.TemplateId == provider.TemplateId && m.Enabled && ApiFamilies.Forwardable.Contains(m.ApiFamily));
         if (upstreamModels is not null) query = query.Where(m => upstreamModels.Contains(m.UpstreamModel));
         return (await query.OrderBy(m => m.UpstreamModel).ToListAsync(ct)).Select(m =>
             new ModelSpec(m.UpstreamModel, m.UpstreamModel, m.MaxOutputTokens, m.InputPricePer1M, m.OutputPricePer1M, m.Currency,
                 m.CacheReadPricePer1M, m.CacheWritePricePer1M,
-                string.IsNullOrEmpty(m.ExtraTiersJson) ? null : JsonSerializer.Deserialize<List<PriceTier>>(m.ExtraTiersJson))).ToList();
+                string.IsNullOrEmpty(m.ExtraTiersJson) ? null : JsonSerializer.Deserialize<List<PriceTier>>(m.ExtraTiersJson),
+                SupportsTools: m.SupportsTools, SupportsVision: m.SupportsVision)).ToList();
     }
 
     /// <summary>
@@ -245,7 +246,11 @@ public sealed partial class ProvisioningService(
                 throw GatewayException.BadRequest("invalid_route", "priority >= 0 dan weight >= 1.");
         }
 
-        var model = new Model { Alias = spec.Alias, MaxOutputTokens = spec.MaxOutputTokens, Description = ValidateDescription(spec.Description) };
+        var model = new Model
+        {
+            Alias = spec.Alias, MaxOutputTokens = spec.MaxOutputTokens, Description = ValidateDescription(spec.Description),
+            SupportsTools = spec.SupportsTools, SupportsStreaming = spec.SupportsStreaming, SupportsVision = spec.SupportsVision,
+        };
         db.Models.Add(model);
         await SaveUniqueAsync("Alias model sudah dipakai.", ct);
         foreach (var r in routes)

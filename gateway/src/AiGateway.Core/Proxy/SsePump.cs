@@ -8,9 +8,9 @@ namespace AiGateway.Core.Proxy;
 /// Respons SSE upstream yang sudah diterima. Event pertama sudah dibaca (supaya kegagalan di awal stream masih bisa
 /// jatuh ke route berikutnya) tetapi belum diteruskan ke klien; sisanya dibaca <see cref="SsePump"/>.
 /// </summary>
-internal sealed class OpenStream(HttpResponseMessage response, StreamReader reader, IReadOnlyList<string> firstLines) : IDisposable
+internal sealed class OpenStream(HttpResponseMessage response, TextReader reader, IReadOnlyList<string> firstLines) : IDisposable
 {
-    public StreamReader Reader { get; } = reader;
+    public TextReader Reader { get; } = reader;
     public IReadOnlyList<string> FirstLines { get; } = firstLines;
 
     public void Dispose()
@@ -21,10 +21,10 @@ internal sealed class OpenStream(HttpResponseMessage response, StreamReader read
 }
 
 /// <summary>Bagaimana sebuah stream berakhir; menentukan status dan alasan di <c>usage_logs</c>.</summary>
-internal enum StreamEnd { Completed, ClientClosed, Interrupted, Timeout, TooLarge }
+internal enum StreamEnd { Completed, ClientClosed, Interrupted, Timeout, TooLarge, UpstreamError }
 
 /// <summary>Hasil satu stream: akhir, usage terakhir yang dilaporkan upstream, alasan selesai, dan teks jawaban (terpotong).</summary>
-internal sealed record StreamOutcome(StreamEnd End, JsonObject? Usage, string? FinishReason, string Content);
+internal sealed record StreamOutcome(StreamEnd End, JsonObject? Usage, string? FinishReason, string Content, bool UsageIncomplete);
 
 /// <summary>
 /// Meneruskan SSE upstream ke klien event demi event dalam format OpenAI: field <c>model</c> diganti alias tenant,
@@ -46,29 +46,70 @@ internal static class SsePump
     }
 
     /// <param name="idle">Batas diam antar baris dari upstream.</param>
-    /// <param name="max">Batas durasi total stream.</param>
+    /// <param name="max">Batas durasi total stream, termasuk write/flush ke klien dan event error.</param>
     /// <param name="ct">Token request klien: batal berarti klien memutus koneksi.</param>
     public static async Task<StreamOutcome> RunAsync(
         OpenStream open, Stream output, string alias, bool forwardUsage, TimeSpan idle, TimeSpan max, CancellationToken ct)
     {
-        using var overall = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        overall.CancelAfter(max);
+        using var deadline = new CancellationTokenSource();
+        using var overall = new CancellationTokenSource();
+        // Kestrel bisa membatalkan RequestAborted sebagai efek write yang dibatalkan deadline.
+        // Simpan pemicu pertama sebelum token gabungan membatalkan I/O; efek itu bukan disconnect klien.
+        var cancellationCause = 0;
+        using var clientCancellation = ct.Register(() =>
+        {
+            Interlocked.CompareExchange(ref cancellationCause, 1, 0);
+            overall.Cancel();
+        });
+        using var deadlineCancellation = deadline.Token.Register(() =>
+        {
+            Interlocked.CompareExchange(ref cancellationCause, 2, 0);
+            overall.Cancel();
+        });
+        deadline.CancelAfter(max);
+
+        StreamEnd CancellationEnd() => Volatile.Read(ref cancellationCause) == 1 ? StreamEnd.ClientClosed : StreamEnd.Timeout;
         // Writer sengaja tidak di-dispose: flush dilakukan di batas event, dan dispose akan menulis lagi ke klien yang mungkin sudah putus.
         var writer = new StreamWriter(output, new UTF8Encoding(false), 4096, leaveOpen: true);
 
         JsonObject? usage = null;
+        var usageIncomplete = true;
         string? finish = null;
         var content = new StringBuilder();
         var skipBlank = false;
         var firstIndex = 0;
         var end = StreamEnd.Interrupted;
 
+        void MergeUsage(JsonObject reported)
+        {
+            usage ??= new JsonObject();
+            foreach (var pair in reported)
+            {
+                if (JsonAccess.TokenCount(pair.Value) is { } count) usage[pair.Key] = count;
+                else if (pair.Value is JsonObject details)
+                {
+                    foreach (var detail in details)
+                    {
+                        if (JsonAccess.TokenCount(detail.Value) is not { } known) continue;
+                        if (usage[pair.Key] is not JsonObject target)
+                            usage[pair.Key] = target = new JsonObject();
+                        target[detail.Key] = known;
+                    }
+                }
+            }
+        }
+
         async ValueTask<string?> NextAsync()
         {
+            overall.Token.ThrowIfCancellationRequested();
             if (firstIndex < open.FirstLines.Count) return open.FirstLines[firstIndex++];
             using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
             idleCts.CancelAfter(idle);
-            return await open.Reader.ReadLineAsync(idleCts.Token);
+            try { return await open.Reader.ReadLineAsync(idleCts.Token); }
+            catch (Exception ex) when (ex is IOException or HttpRequestException && idleCts.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("Upstream read canceled.", ex, idleCts.Token);
+            }
         }
 
         // Mengembalikan true bila stream selesai ([DONE]).
@@ -77,41 +118,50 @@ internal static class SsePump
             if (line.Length == 0) // batas event
             {
                 if (skipBlank) { skipBlank = false; return false; }
-                await writer.WriteAsync("\n".AsMemory(), ct);
-                await writer.FlushAsync(ct);
+                await writer.WriteAsync("\n".AsMemory(), overall.Token);
+                await writer.FlushAsync(overall.Token);
                 return false;
             }
             if (!TryGetData(line, out var payload)) // komentar, event:, id:, retry: diteruskan apa adanya
             {
-                await writer.WriteAsync((line + "\n").AsMemory(), ct);
+                await writer.WriteAsync((line + "\n").AsMemory(), overall.Token);
                 return false;
             }
             if (payload.Trim() == "[DONE]")
             {
-                await writer.WriteAsync("data: [DONE]\n\n".AsMemory(), ct);
-                await writer.FlushAsync(ct);
+                await writer.WriteAsync("data: [DONE]\n\n".AsMemory(), overall.Token);
+                await writer.FlushAsync(overall.Token);
                 return true;
             }
 
             var chunk = TryParse(payload);
             if (chunk is null)
             {
-                await writer.WriteAsync((line + "\n").AsMemory(), ct);
+                await writer.WriteAsync((line + "\n").AsMemory(), overall.Token);
                 return false;
             }
 
             if (chunk["usage"] is JsonObject reported)
             {
-                usage = (JsonObject)reported.DeepClone();
-                if (!forwardUsage)
+                MergeUsage(reported);
+                usageIncomplete = JsonAccess.TokenCount(reported["prompt_tokens"]) is null
+                    || JsonAccess.TokenCount(reported["completion_tokens"]) is null;
+            }
+            if (chunk["error"] is not null)
+            {
+                end = StreamEnd.UpstreamError;
+                await writer.WriteAsync(("data: " + chunk.ToJsonString() + "\n\n").AsMemory(), overall.Token);
+                await writer.FlushAsync(overall.Token);
+                return true; // kegagalan terminal: jangan membaca atau meneruskan [DONE] berikutnya.
+            }
+            if (!forwardUsage && chunk["usage"] is JsonObject)
+            {
+                if (chunk["choices"] is not JsonArray { Count: > 0 })
                 {
-                    if (chunk["choices"] is not JsonArray { Count: > 0 })
-                    {
-                        skipBlank = true; // chunk usage-saja: buang beserta baris kosong pemisahnya
-                        return false;
-                    }
-                    chunk.Remove("usage");
+                    skipBlank = true; // chunk usage-saja: buang beserta baris kosong pemisahnya
+                    return false;
                 }
+                chunk.Remove("usage");
             }
             if (chunk["choices"] is JsonArray { Count: > 0 } choices && choices[0] is JsonObject choice)
             {
@@ -120,7 +170,7 @@ internal static class SsePump
                     content.Append(text, 0, Math.Min(text.Length, MaxCapturedChars - content.Length));
             }
             if (chunk.ContainsKey("model")) chunk["model"] = alias;
-            await writer.WriteAsync(("data: " + chunk.ToJsonString() + "\n").AsMemory(), ct);
+            await writer.WriteAsync(("data: " + chunk.ToJsonString() + "\n").AsMemory(), overall.Token);
             return false;
         }
 
@@ -128,28 +178,36 @@ internal static class SsePump
         {
             string? line;
             try { line = await NextAsync(); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { end = StreamEnd.ClientClosed; break; }
-            catch (OperationCanceledException) { end = StreamEnd.Timeout; break; }
+            catch (OperationCanceledException) { end = CancellationEnd(); break; }
             catch (ResponseTooLargeException) { end = StreamEnd.TooLarge; break; }
-            catch (Exception ex) when (ex is IOException or HttpRequestException) { end = StreamEnd.Interrupted; break; }
+            catch (Exception ex) when (ex is IOException or HttpRequestException)
+            {
+                end = overall.IsCancellationRequested ? CancellationEnd() : StreamEnd.Interrupted;
+                break;
+            }
 
             if (line is null)
             {
                 // Upstream menutup tanpa [DONE]: utuh bila finish_reason sudah terlihat, selain itu terputus.
-                if (finish is not null && await TryWriteAsync(writer, "data: [DONE]\n\n", ct)) end = StreamEnd.Completed;
-                else if (finish is not null) end = StreamEnd.ClientClosed;
+                if (finish is not null && await TryWriteAsync(writer, "data: [DONE]\n\n", overall.Token)) end = StreamEnd.Completed;
+                else if (finish is not null) end = overall.IsCancellationRequested ? CancellationEnd() : StreamEnd.ClientClosed;
                 break;
             }
 
             try
             {
                 if (!await HandleAsync(line)) continue;
-                end = StreamEnd.Completed;
+                if (end != StreamEnd.UpstreamError) end = StreamEnd.Completed;
                 break;
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+            catch (OperationCanceledException)
             {
-                end = StreamEnd.ClientClosed;
+                end = CancellationEnd();
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                end = overall.IsCancellationRequested ? CancellationEnd() : StreamEnd.ClientClosed;
                 break;
             }
         }
@@ -158,15 +216,25 @@ internal static class SsePump
         {
             var (code, message) = end switch
             {
-                StreamEnd.Timeout => ("upstream_stream_timeout", "The provider stopped responding mid-stream."),
+                StreamEnd.Timeout => ("upstream_stream_timeout", "The stream exceeded its deadline or the provider stopped responding."),
                 StreamEnd.TooLarge => ("upstream_response_too_large", "The provider returned a response that is too large."),
                 _ => ("upstream_stream_interrupted", "The provider closed the stream before it finished."),
             };
-            // Status 200 sudah terkirim; satu-satunya jalan memberi tahu klien adalah event error lalu menutup.
-            await TryWriteAsync(writer, $"data: {GatewayResponse.Error(502, ErrorTypes.Upstream, code, message).Body}\n\n", ct);
+            // Best effort dalam deadline yang sama; deadline habis tidak boleh memulai write macet baru.
+            if (!await TryWriteAsync(writer, $"data: {GatewayResponse.Error(502, ErrorTypes.Upstream, code, message).Body}\n\n", overall.Token))
+            {
+                if (overall.IsCancellationRequested) end = CancellationEnd();
+            }
         }
 
-        return new StreamOutcome(end, usage, finish, content.ToString());
+        // Adaptor bisa menerima usage sebelum sempat mengirim chunk final, termasuk saat ReadLine dibatalkan.
+        if (open.Reader is ChatChunkReader translator)
+        {
+            if (translator.UsageSnapshot is { } snapshot) MergeUsage(snapshot);
+            usageIncomplete = translator.UsageIncomplete;
+        }
+
+        return new StreamOutcome(end, usage, finish, content.ToString(), usageIncomplete);
     }
 
     private static async Task<bool> TryWriteAsync(StreamWriter writer, string text, CancellationToken ct)

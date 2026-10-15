@@ -1,0 +1,28 @@
+/* Header jawaban: alias model (mono), label alternatif, waktu proses, dan pemakaian token. */
+.bubble-model { font-family: var(--ns-font-mono); font-size: 13px; font-weight: 500; }
+.alt-badge { padding: 2px 8px; border-radius: var(--ns-radius-pill); background: var(--ns-accent-tint); color: var(--ns-accent); font-size: 11px; font-weight: 600; }
+.bubble-timing, .bubble-tokens { color: var(--ns-text-muted); font-family: var(--ns-font-mono); font-size: 11px; }
+.bubble-timing { cursor: help; }
+
+/* Aksi berlabel teks: aksi yang mengantrekan tiket baru atau menyimpan jawaban harus terbaca, bukan ikon saja. */
+.action-button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border: 1px solid var(--ns-border); border-radius: 9px; background: var(--ns-surface); color: var(--ns-text-3); font: inherit; font-size: 13px; }
+.action-button:hover:not(:disabled) { background: var(--ns-muted); color: var(--ns-text); }
+.bubble-assistant .message-actions { flex-wrap: wrap; }
+
+/* Tiket alternatif belum punya jawaban: baris tunggu, bukan bubble kosong yang terlihat seperti jawaban. */
+.pending-answer { gap: 8px; }
+.pending-note { margin: 0; color: var(--ns-accent); font-size: 13px; }
+
+/* Dialog bandingkan: <dialog> native (Esc dan backdrop menutup sendiri), gaya sama dengan dialog lampiran. */
+.compare-dialog { width: min(92vw, 460px); padding: 20px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-2xl); background: var(--ns-surface); color: var(--ns-text); box-shadow: var(--ns-shadow-modal); }
+.compare-dialog::backdrop { background: rgb(26 26 29 / .6); }
+.compare-title { margin: 0 0 8px; font-size: var(--ns-text-lg); }
+.compare-dialog p { margin: 0 0 12px; font-size: 13px; line-height: 1.6; }
+.compare-models { display: flex; flex-direction: column; gap: 2px; max-height: 46dvh; margin: 0 0 12px; padding: 0; list-style: none; overflow-y: auto; }
+.compare-model { display: flex; align-items: center; gap: 8px; min-height: var(--ns-touch); padding: 6px 8px; border-radius: var(--ns-radius-md); cursor: pointer; }
+.compare-model:hover { background: var(--ns-muted); }
+.compare-model-disabled { cursor: not-allowed; color: var(--ns-text-muted); }
+.compare-model-name { font-family: var(--ns-font-mono); font-size: 13px; }
+.compare-model-reason { margin-left: auto; color: var(--ns-text-muted); font-size: 12px; }
+.compare-branch-errors { margin: 0 0 12px; padding-left: 18px; color: var(--ns-danger); font-size: 13px; }
+.compare-actions { display: flex; justify-content: flex-end; gap: 8px; }

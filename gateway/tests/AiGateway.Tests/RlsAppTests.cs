@@ -99,9 +99,10 @@ public class RlsAppTests(TestDb db) : GatewayTestBase(db, rls: true)
     [Fact]
     public async Task Failed_login_and_platform_action_do_not_fail_when_their_audit_rows_are_blocked()
     {
-        // Login gagal dan aksi tingkat platform menulis baris audit tanpa tenant; baris itu ditolak block
-        // predicate saat koneksi memakai principal gateway_app (limit yang didokumentasikan di script dan
-        // AuditWriter). Yang diuji di sini: kegagalan audit tidak boleh menggagalkan aksi HTTP-nya.
+        // Tanpa ConnectionStrings:GatewayPlatform (host test ini), login gagal dan aksi tingkat platform menulis baris
+        // audit tanpa tenant yang ditolak block predicate saat koneksi memakai principal gateway_app (limit yang
+        // didokumentasikan di script dan AuditWriter; jalur ber-GatewayPlatform ada di PlatformRlsTests). Yang diuji
+        // di sini: kegagalan audit tidak boleh menggagalkan aksi HTTP-nya.
         using (var wrong = await Client.PostAsJsonAsync("/admin/api/auth/login",
                    new { email = $"nobody-{Guid.NewGuid():N}@example.test", password = "wrong-password-123" }))
             Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
@@ -118,6 +119,97 @@ public class RlsAppTests(TestDb db) : GatewayTestBase(db, rls: true)
         request.Headers.Authorization = new("Bearer", token);
         using var created = await Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+    }
+
+    [Fact]
+    public async Task Settings_work_through_the_admin_and_client_apis_under_rls()
+    {
+        var a = await SetupAsync();
+        var b = await SetupAsync();
+        var (_, _, email) = await NewUserAsync(Roles.Admin, a.TenantId);
+        using var login = await Client.PostAsJsonAsync("/admin/api/auth/login", new { email, password = StrongPassword });
+        var token = (string)(await BodyAsync(login))["accessToken"]!;
+
+        using var put = new HttpRequestMessage(HttpMethod.Put, "/admin/api/settings/chatbot/Dispatcher:MaxConcurrentOperators")
+        {
+            Content = JsonContent.Create(new { value = "4", valueType = "int" }),
+        };
+        put.Headers.Authorization = new("Bearer", token);
+        using var saved = await Client.SendAsync(put);
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        // Premis: tanpa tenant context koneksi aplikasi tidak melihat baris app_settings mana pun.
+        await using (var none = Db.NewContext())
+            Assert.Empty(await none.AppSettings.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+
+        // Klien membaca lewat API key (tenant diketahui dari key via prosedur bootstrap); tenant lain tidak melihatnya.
+        using var own = new HttpRequestMessage(HttpMethod.Get, "/client/api/settings?namespace=chatbot");
+        own.Headers.Authorization = new("Bearer", a.ApiKey);
+        using var ownResponse = await Client.SendAsync(own);
+        Assert.Equal(HttpStatusCode.OK, ownResponse.StatusCode);
+        Assert.Equal("4", (string?)(await BodyAsync(ownResponse))["items"]![0]!["value"]);
+
+        using var foreign = new HttpRequestMessage(HttpMethod.Get, "/client/api/settings?namespace=chatbot");
+        foreign.Headers.Authorization = new("Bearer", b.ApiKey);
+        using var foreignResponse = await Client.SendAsync(foreign);
+        Assert.Empty((await BodyAsync(foreignResponse))["items"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task App_status_reports_are_isolated_by_tenant_under_rls()
+    {
+        var a = await SetupAsync();
+        var b = await SetupAsync();
+        var (_, _, emailA) = await NewUserAsync(Roles.Viewer, a.TenantId);
+        using var loginA = await Client.PostAsJsonAsync("/admin/api/auth/login", new { email = emailA, password = StrongPassword });
+        Assert.Equal(HttpStatusCode.OK, loginA.StatusCode);
+        var tokenA = (string)(await BodyAsync(loginA))["accessToken"]!;
+
+        // POST lewat jalur produksi: tenant untuk baris baru hanya bisa datang dari api_key_bootstrap + authenticator.
+        using var post = new HttpRequestMessage(HttpMethod.Post, "/client/api/app-status")
+        {
+            Content = JsonContent.Create(new
+            {
+                @namespace = "chatbot",
+                policyHash = new string('a', 64),
+                promptHash = new string('b', 64),
+                syncStatus = "synced",
+                effectiveValues = new Dictionary<string, string> { ["Operator:MaxToolLoops"] = "5" },
+                queue = new { pending = 0, processing = 0, done = 0, failed = 0 },
+                jobs = new { pending = 0, processing = 0, done = 0, failed = 0 },
+                reportIntervalSeconds = 15,
+                observedAt = DateTimeOffset.UtcNow,
+            }),
+        };
+        post.Headers.Authorization = new("Bearer", a.ApiKey);
+        using var posted = await Client.SendAsync(post);
+        Assert.Equal(HttpStatusCode.OK, posted.StatusCode);
+
+        // Premis RLS: tanpa context tenant, baris app_status_reports tenant mana pun tidak terlihat koneksi aplikasi.
+        await using (var none = Db.NewContext())
+            Assert.Empty(await none.AppStatusReports.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+        await using (var own = Db.NewContext(a.TenantId))
+        {
+            var row = Assert.Single(await own.AppStatusReports.AsNoTracking().ToListAsync());
+            Assert.Equal(a.TenantId, row.TenantId);
+            Assert.Equal(a.KeyId, row.ApiKeyId);
+        }
+
+        using var getA = new HttpRequestMessage(HttpMethod.Get, "/admin/api/app-status?namespace=chatbot");
+        getA.Headers.Authorization = new("Bearer", tokenA);
+        using var listedA = await Client.SendAsync(getA);
+        Assert.Equal(HttpStatusCode.OK, listedA.StatusCode);
+        Assert.Single((await BodyAsync(listedA))["items"]!.AsArray());
+
+        // Tenant lain tidak melihat laporan tenant A.
+        var (_, _, emailB) = await NewUserAsync(Roles.Viewer, b.TenantId);
+        using var loginB = await Client.PostAsJsonAsync("/admin/api/auth/login", new { email = emailB, password = StrongPassword });
+        Assert.Equal(HttpStatusCode.OK, loginB.StatusCode);
+        using var getB = new HttpRequestMessage(HttpMethod.Get, "/admin/api/app-status?namespace=chatbot");
+        getB.Headers.Authorization = new("Bearer", (string)(await BodyAsync(loginB))["accessToken"]!);
+        using var listedB = await Client.SendAsync(getB);
+        Assert.Equal(HttpStatusCode.OK, listedB.StatusCode);
+        Assert.Empty((await BodyAsync(listedB))["items"]!.AsArray());
     }
 
     private async Task<object?> ScalarAsync(string sql)

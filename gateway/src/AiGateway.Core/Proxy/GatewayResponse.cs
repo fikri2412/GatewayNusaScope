@@ -24,6 +24,8 @@ public sealed record GatewayResponse(int Status, string Body, string? RetryAfter
 /// <summary>Pemanggil yang sudah terautentikasi lewat API key.</summary>
 public sealed record GatewayCaller(ApiKey Key, Guid RequestId, string? ClientIp, string? UserAgent, string? Tags)
 {
+    /// <summary>Identitas session transport, bukan otoritas tenant; hanya diteruskan ke endpoint OpenCode Go.</summary>
+    public string? SessionId { get; init; }
     public long TenantId => Key.TenantId;
     public long ProjectId => Key.ProjectId;
 }

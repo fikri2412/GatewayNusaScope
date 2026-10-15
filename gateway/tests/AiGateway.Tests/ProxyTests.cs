@@ -75,6 +75,19 @@ public class ProxyTests(TestDb db) : GatewayTestBase(db)
     }
 
     [Fact]
+    public async Task Invalid_session_ids_are_denied_before_forwarding()
+    {
+        var s = await SetupAsync();
+        foreach (var session in new[] { "bad/session", "first,second", new string('a', 201) })
+        {
+            var response = await PostChatAsync(s.ApiKey, Chat(),
+                r => r.Headers.Add("x-opencode-session", session));
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("invalid_session_id", ErrorCode(await BodyAsync(response)));
+        }
+    }
+
+    [Fact]
     public Task Revoked_key_is_denied() => AssertDeniedAsync(
         (s, ctx) => ctx.ApiKeys.Where(k => k.Id == s.KeyId).ExecuteUpdateAsync(u => u.SetProperty(k => k.RevokedAt, DateTime.UtcNow)),
         HttpStatusCode.Unauthorized, "api_key_revoked");
@@ -325,6 +338,132 @@ public class ProxyTests(TestDb db) : GatewayTestBase(db)
         var anonymous = await Client.GetAsync("/v1/models");
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
+
+    [Fact]
+    public async Task Models_endpoint_reports_capabilities_readiness_and_the_effective_output_limit()
+    {
+        var s = await SetupAsync(maxOutput: 1000);
+
+        var unconfirmed = await ModelAsync(s.ApiKey);
+        Assert.Equal(("gpt-test", "model", "gateway"),
+            ((string?)unconfirmed["id"], (string?)unconfirmed["object"], (string?)unconfirmed["owned_by"]));
+        Assert.NotNull(unconfirmed["created"]);
+        // Metadata belum dikonfirmasi tetap NULL (bukan tebakan), route siap, batas = batas model.
+        Assert.Equal((null, (bool?)null, (bool?)null),
+            ((bool?)unconfirmed["capabilities"]!["tools"], (bool?)unconfirmed["capabilities"]!["streaming"], (bool?)unconfirmed["capabilities"]!["vision"]));
+        Assert.Equal((true, null), ((bool?)unconfirmed["readiness"]!["available"], (string?)unconfirmed["readiness"]!["reason"]));
+        Assert.Equal(1000, (int?)unconfirmed["limits"]!["max_output_tokens"]);
+
+        await WithTenantAsync(s.TenantId, async (prov, _) =>
+        {
+            await prov.UpdateModelAsync(s.ModelId, new ModelPatch(SupportsTools: true, SupportsStreaming: false, SupportsVision: true), default);
+            await prov.SetPolicyAsync(PolicyScopes.Tenant, s.TenantId, new PolicySpec(MaxTokensPerRequest: 700), default);
+            await prov.SetPolicyAsync(PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 300, AllowedModels: ["gpt-test"]), default);
+            return 0;
+        });
+
+        var confirmed = await ModelAsync(s.ApiKey);
+        Assert.Equal((true, false, true),
+            ((bool?)confirmed["capabilities"]!["tools"], (bool?)confirmed["capabilities"]!["streaming"], (bool?)confirmed["capabilities"]!["vision"]));
+        Assert.Equal(300, (int?)confirmed["limits"]!["max_output_tokens"]); // terkecil dari model dan semua scope kebijakan
+
+        await WithTenantAsync(s.TenantId, async (prov, _) =>
+        {
+            await prov.SetPolicyAsync(PolicyScopes.Key, s.KeyId, new PolicySpec(MaxTokensPerRequest: 5000), default);
+            await prov.SetPolicyAsync(PolicyScopes.Tenant, s.TenantId, new PolicySpec(MaxTokensPerRequest: 5000), default);
+            return 0;
+        });
+
+        // Kebijakan lebih longgar dari model: batas model yang berlaku.
+        Assert.Equal(1000, (int?)(await ModelAsync(s.ApiKey))["limits"]!["max_output_tokens"]);
+    }
+
+    [Fact]
+    public async Task Inline_image_data_is_never_copied_into_the_stored_request_body()
+    {
+        var s = await SetupAsync();
+        await WithTenantAsync(s.TenantId, async (prov, _) =>
+        {
+            await prov.UpdateProjectAsync(s.ProjectId, new ProjectPatch(LogContent: true), default);
+            return 0;
+        });
+
+        var image = "data:image/png;base64," + new string('A', 64);
+        var response = await PostChatAsync(s.ApiKey,
+            $$$"""{"model":"gpt-test","messages":[{"role":"user","content":[{"type":"text","text":"baca grafik"},{"type":"image_url","image_url":{"url":"{{{image}}}"}}]}]}""");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // Upstream tetap menerima gambar apa adanya; yang dibersihkan hanya salinan untuk log_content.
+        Assert.Contains(image, Assert.Single(Upstream.Requests).Body);
+
+        await using var ctx = Db.NewContext(s.TenantId);
+        var stored = await ctx.Set<RequestBody>().SingleAsync();
+        Assert.Contains("baca grafik", stored.RequestJson!);
+        Assert.Contains("[inline image omitted]", stored.RequestJson!);
+        Assert.DoesNotContain("AAAA", stored.RequestJson!);
+    }
+
+    private async Task<JsonNode> ModelAsync(string apiKey)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        request.Headers.Authorization = new("Bearer", apiKey);
+        var response = await Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return Assert.IsType<JsonObject>(((JsonArray)(await BodyAsync(response))["data"]!).Single());
+    }
+
+    [Fact]
+    public async Task Model_readiness_is_false_exactly_when_forwarding_has_no_eligible_route()
+    {
+        var s = await SetupAsync();
+
+        await WithTenantAsync(s.TenantId, async (_, db) =>
+        {
+            await db.ModelRoutes.Where(r => r.ModelId == s.ModelId).ExecuteUpdateAsync(u => u.SetProperty(r => r.Enabled, false));
+            return 0;
+        });
+        Assert.False(await ReadyAsync(s.ApiKey));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+
+        await WithTenantAsync(s.TenantId, async (_, db) =>
+        {
+            await db.ModelRoutes.Where(r => r.ModelId == s.ModelId).ExecuteDeleteAsync();
+            return 0;
+        });
+        Assert.False(await ReadyAsync(s.ApiKey));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+
+        await WithTenantAsync(s.TenantId, async (prov, db) =>
+        {
+            await prov.ReplaceRoutesAsync(s.ModelId, [new RouteSpec(s.ProviderId, "real-model")], default);
+            await db.Providers.Where(p => p.Id == s.ProviderId).ExecuteUpdateAsync(u => u.SetProperty(p => p.Enabled, false));
+            return 0;
+        });
+        Assert.False(await ReadyAsync(s.ApiKey));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+
+        await WithTenantAsync(s.TenantId, async (_, db) =>
+        {
+            await db.Providers.Where(p => p.Id == s.ProviderId).ExecuteUpdateAsync(u => u.SetProperty(p => p.Enabled, true));
+            await db.ProviderCredentials.Where(c => c.ProviderId == s.ProviderId)
+                .ExecuteUpdateAsync(u => u.SetProperty(c => c.Status, CredentialStatuses.Disabled));
+            return 0;
+        });
+        Assert.False(await ReadyAsync(s.ApiKey));
+        var notReady = await ModelAsync(s.ApiKey);
+        Assert.Equal("no_available_provider", (string?)notReady["readiness"]!["reason"]);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+
+        await WithTenantAsync(s.TenantId, async (_, db) =>
+        {
+            await db.ProviderCredentials.Where(c => c.ProviderId == s.ProviderId)
+                .ExecuteUpdateAsync(u => u.SetProperty(c => c.Status, CredentialStatuses.Active));
+            return 0;
+        });
+        Assert.True(await ReadyAsync(s.ApiKey));
+        Assert.Equal(HttpStatusCode.OK, (await PostChatAsync(s.ApiKey, Chat())).StatusCode);
+    }
+
+    private async Task<bool> ReadyAsync(string apiKey) => (bool?)(await ModelAsync(apiKey))["readiness"]!["available"] == true;
 
     [Fact]
     public async Task Custom_auth_header_and_key_rotation_are_used_for_upstream_calls()

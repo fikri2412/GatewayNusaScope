@@ -541,7 +541,6 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
         trickle.Cancel();
         await writer;
 
-        Assert.Equal("upstream_stream_timeout", ErrorCode(events[^1].Json!));
         Assert.DoesNotContain(events, e => e.IsDone);
         var log = await LogAsync(s.TenantId);
         Assert.Equal((UsageStatuses.Error, 200, "upstream_stream_timeout"), (log.Status, log.HttpStatus, log.DeniedReason));

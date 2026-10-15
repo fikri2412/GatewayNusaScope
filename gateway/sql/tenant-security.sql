@@ -27,6 +27,10 @@
      rls.maintenance_isolation_policy menutup tabel maintenance G4 (request_bodies,
      alert_rules, alert_events, webhooks, webhook_deliveries) dan hanya dipasang/dilepas
      bila kelima tabelnya sudah ada, jadi urutan integrasi migration bebas.
+     rls.settings_isolation_policy menutup app_settings (pengaturan aplikasi G6) dengan aturan
+     yang sama: dipasang/dilepas hanya bila tabelnya sudah ada.
+     rls.app_status_isolation_policy menutup app_status_reports (laporan status aplikasi 6A1) dengan
+     aturan yang sama.
      IgnoreQueryFilters() di EF tidak bisa melihat atau menulis baris tenant lain pada
      tabel mana pun. job_runs bersifat platform (tanpa tenant_id) dan sengaja tidak ditutup.
    * Bagian 3-4 berjalan dalam satu transaksi dan hanya bila sebelas tabel inti sudah ada:
@@ -42,15 +46,15 @@
    * Tabel users/refresh_tokens/user_tokens TIDAK dilindungi RLS: login dan lookup
      user memang global (platform admin punya tenant_id NULL).
    * audit_logs: baris tanpa tenant (aksi tingkat platform, login gagal, accept-invite)
-     DITOLAK block predicate untuk koneksi gateway_app. ponytail: menuliskan baris
-     tenant_id NULL hanya bisa lewat principal gateway_platform; plane platform HTTP
-     masih memakai koneksi aplikasi, jadi baris itu belum tercatat kalau RLS aktif
-     (upgrade path: DbContext kedua dengan login gateway_platform, lihat DECISIONS G4).
-     Predikat tidak dilonggarkan untuk NULL: tenant akan bisa memalsukan baris audit
-     tingkat platform. Kegagalan tulisan dilaporkan AuditWriter di level Error.
+     DITOLAK block predicate untuk koneksi gateway_app; hanya principal gateway_platform
+     yang boleh menuliskan tenant_id NULL. AuditWriter menulis baris itu lewat
+     ConnectionStrings:GatewayPlatform (Core/Data/PlatformDb.cs); tanpa connection string
+     itu baris ditolak dan dilaporkan di level Error. Predikat tidak dilonggarkan untuk
+     NULL: tenant akan bisa memalsukan baris audit tingkat platform.
    * Tabel tenant baru wajib ditambahkan ke policy di bagian 4, lalu script dijalankan ulang.
-   * Job background yang membaca/menghapus lintas tenant (retensi, webhook) memakai koneksi
-     principal gateway_platform; pada koneksi gateway_app baris tenant lain tidak terlihat.
+   * Job background (retensi, webhook) dan plane platform HTTP (laporan lintas tenant,
+     audit tanpa tenant) memakai koneksi principal gateway_platform; pada koneksi
+     gateway_app baris tenant lain tidak terlihat.
 
    Operasional
    -----------
@@ -59,9 +63,9 @@
        CREATE USER gateway_app_user FOR LOGIN gateway_app_login;
        ALTER ROLE gateway_app ADD MEMBER gateway_app_user;
      Jangan tambahkan user aplikasi ke db_owner/db_datawriter — itu melebarkan hak.
-   * Principal yang login-nya di gateway_platform (mis. untuk laporan lintas tenant
-     atau retensi) ikut mem-bypass predikat. Aplikasi biasa TIDAK boleh memakai
-     principal ini; gateway_app juga tidak bisa EXECUTE AS ke anggotanya.
+   * Principal yang login-nya di gateway_platform ikut mem-bypass predikat. Jalur tenant
+     aplikasi TIDAK boleh memakainya (hanya ConnectionStrings:GatewayPlatform: job latar,
+     laporan platform, audit tanpa tenant); gateway_app juga tidak bisa EXECUTE AS ke anggotanya.
    * Context dipasang per koneksi oleh Core/Data/TenantSessionInterceptor.cs.
    * Kontrak untuk ApiKeyAuthenticator (lihat juga bagian 5 di bawah):
        EXEC dbo.api_key_bootstrap @key_prefix = @p
@@ -105,8 +109,8 @@ DENY UPDATE, DELETE ON dbo.audit_logs TO gateway_app;
 
 IF SCHEMA_ID(N'rls') IS NULL EXEC(N'CREATE SCHEMA rls;');
 
--- Sebelas tabel inti dan lima tabel maintenance dilepas/dipasang dalam SATU transaksi: kalau ada
--- langkah gagal (tabel kurang, hak kurang, script dibatalkan) tidak ada jendela "RLS mati" dan
+-- Sebelas tabel inti, lima tabel maintenance, app_settings, dan app_status_reports dilepas/dipasang dalam SATU
+-- transaksi: kalau ada langkah gagal (tabel kurang, hak kurang, script dibatalkan) tidak ada jendela "RLS mati" dan
 -- policy lama tidak hilang tanpa pengganti. Bagian ini dilewati bila tabel inti belum ada.
 DECLARE @coreTablesOk BIT = CASE WHEN
         OBJECT_ID(N'dbo.providers', N'U') IS NOT NULL
@@ -128,6 +132,16 @@ DECLARE @maintenanceTablesOk BIT = CASE WHEN
         AND OBJECT_ID(N'dbo.webhooks', N'U') IS NOT NULL
         AND OBJECT_ID(N'dbo.webhook_deliveries', N'U') IS NOT NULL
     THEN 1 ELSE 0 END;
+DECLARE @settingsTableOk BIT = CASE WHEN
+        OBJECT_ID(N'dbo.app_settings', N'U') IS NOT NULL
+    THEN 1 ELSE 0 END;
+DECLARE @statusTableOk BIT = CASE WHEN
+        OBJECT_ID(N'dbo.app_status_reports', N'U') IS NOT NULL
+    THEN 1 ELSE 0 END;
+DECLARE @searchTablesOk BIT = CASE WHEN
+        OBJECT_ID(N'dbo.search_provider_configs', N'U') IS NOT NULL
+        AND OBJECT_ID(N'dbo.search_provider_states', N'U') IS NOT NULL
+    THEN 1 ELSE 0 END;
 
 IF @coreTablesOk = 0
     PRINT N'tenant-security: tabel inti belum lengkap; policy RLS tidak diubah. Jalankan ulang setelah migration.';
@@ -143,6 +157,15 @@ BEGIN
         IF @maintenanceTablesOk = 1 AND EXISTS (SELECT 1 FROM sys.security_policies
                    WHERE name = N'maintenance_isolation_policy' AND schema_id = SCHEMA_ID(N'rls'))
             EXEC(N'DROP SECURITY POLICY rls.maintenance_isolation_policy;');
+        IF @settingsTableOk = 1 AND EXISTS (SELECT 1 FROM sys.security_policies
+                   WHERE name = N'settings_isolation_policy' AND schema_id = SCHEMA_ID(N'rls'))
+            EXEC(N'DROP SECURITY POLICY rls.settings_isolation_policy;');
+        IF @statusTableOk = 1 AND EXISTS (SELECT 1 FROM sys.security_policies
+                   WHERE name = N'app_status_isolation_policy' AND schema_id = SCHEMA_ID(N'rls'))
+            EXEC(N'DROP SECURITY POLICY rls.app_status_isolation_policy;');
+        IF @searchTablesOk = 1 AND EXISTS (SELECT 1 FROM sys.security_policies
+                   WHERE name = N'search_provider_isolation_policy' AND schema_id = SCHEMA_ID(N'rls'))
+            EXEC(N'DROP SECURITY POLICY rls.search_provider_isolation_policy;');
 
 EXEC(N'
 CREATE OR ALTER FUNCTION rls.fn_tenant_access(@tenant_id BIGINT)
@@ -219,6 +242,43 @@ IF @maintenanceTablesOk = 1
         ADD FILTER PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.webhook_deliveries,
         ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.webhook_deliveries AFTER INSERT,
         ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.webhook_deliveries AFTER UPDATE
+    WITH (STATE = ON);
+    ');
+
+/* ------- 4c. Policy pengaturan/status aplikasi (bagian dari transaksi yang sama) ------- */
+
+-- app_settings (menu Pengaturan) milik tenant; dipasang/dilepas hanya bila tabelnya sudah ada
+-- (migration G6AppSettings), dengan aturan yang sama seperti tabel maintenance.
+IF @settingsTableOk = 1
+    EXEC(N'
+    CREATE SECURITY POLICY rls.settings_isolation_policy
+        ADD FILTER PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_settings,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_settings AFTER INSERT,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_settings AFTER UPDATE
+    WITH (STATE = ON);
+    ');
+
+-- app_status_reports (laporan status aplikasi 6A1) milik tenant; dipasang/dilepas hanya bila tabelnya sudah ada
+-- (migration AppStatusReports), dengan aturan yang sama seperti tabel maintenance.
+IF @statusTableOk = 1
+    EXEC(N'
+    CREATE SECURITY POLICY rls.app_status_isolation_policy
+        ADD FILTER PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_status_reports,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_status_reports AFTER INSERT,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.app_status_reports AFTER UPDATE
+    WITH (STATE = ON);
+    ');
+
+/* ------- 4e. Policy web search provider hub (bagian dari transaksi yang sama) ------- */
+IF @searchTablesOk = 1
+    EXEC(N'
+    CREATE SECURITY POLICY rls.search_provider_isolation_policy
+        ADD FILTER PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_configs,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_configs AFTER INSERT,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_configs AFTER UPDATE,
+        ADD FILTER PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_states,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_states AFTER INSERT,
+        ADD BLOCK PREDICATE rls.fn_tenant_access(tenant_id) ON dbo.search_provider_states AFTER UPDATE
     WITH (STATE = ON);
     ');
 

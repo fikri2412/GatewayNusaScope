@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using AiGateway.Core.WebSearch;
 
 namespace AiGateway.Core.Data;
 
@@ -13,7 +14,9 @@ public sealed class DbSeeder(
     GatewayDbContext db,
     IPasswordHasher<User> hasher,
     IOptions<SeedOptions> seed,
-    ILogger<DbSeeder> log)
+    ILogger<DbSeeder> log,
+    IOptions<WebSearchOptions>? searchOptions = null,
+    SearchProviderRegistry? searchRegistry = null)
 {
     public const string DefaultPlanName = "Default";
     public const string OpenCodeTemplateCode = "opencode";
@@ -30,6 +33,7 @@ public sealed class DbSeeder(
 
         await SeedCatalogAsync(ct);
         await SeedAdminAsync(ct);
+        await SeedSearchProvidersAsync(ct);
     }
 
     /// <summary>
@@ -111,5 +115,37 @@ public sealed class DbSeeder(
             log.LogInformation("Platform admin dibuat: {Email}", user.Email);
         else
             log.LogWarning("Platform admin {Email} tidak dibuat: email sudah dipakai user lain atau dibuat proses lain.", user.Email);
+    }
+
+    private async Task SeedSearchProvidersAsync(CancellationToken ct)
+    {
+        var settings = searchOptions?.Value;
+        if (settings is null || settings.Providers.Length == 0 || searchRegistry is null) return;
+        if (string.IsNullOrWhiteSpace(settings.SeedTenantSlug))
+            throw new InvalidOperationException("WebSearch:SeedTenantSlug wajib diisi untuk seed provider.");
+        var tenantId = await db.Tenants.Where(t => t.Slug == settings.SeedTenantSlug)
+            .Select(t => (long?)t.Id).SingleOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException("Tenant seed WebSearch tidak ditemukan; buat tenant lebih dulu.");
+        var previousTenant = db.CurrentTenantId;
+        db.CurrentTenantId = tenantId;
+        try
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+            var resource = $"web-search-seed:{tenantId}";
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                DECLARE @result int;
+                EXEC @result = sys.sp_getapplock @Resource={resource}, @LockMode='Exclusive',
+                    @LockOwner='Transaction', @LockTimeout=10000;
+                IF @result < 0 THROW 51000, 'Web search seed lock unavailable.', 1;
+                """, ct);
+            if (!await db.SearchProviderConfigs.IgnoreQueryFilters().AnyAsync(p => p.TenantId == tenantId, ct))
+                foreach (var provider in settings.Providers)
+                    await searchRegistry.CreateAsync(provider, ct);
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            db.CurrentTenantId = previousTenant;
+        }
     }
 }

@@ -1,39 +1,24 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import { api, downloadFile, errorMessage } from '../api'
 import { canConfigure, useAuth } from '../auth'
 import type { AdminUser, ApiKeyDto, AuditItem, ModelDto, Page, PolicyDto, ProjectDto, Role, UsageBodyDto, UsageLogItem, UsageRow } from '../types'
 import { PROJECT_STATUSES, ROLES } from '../types'
+import { Alert, DataTable, EmptyRow, Field, Loading, Modal, PageHeader, Pager, SecretPanel, Toolbar } from '../ui'
 import {
-  Alert,
-  DataTable,
-  EmptyRow,
-  Field,
+  daysAgo,
+  endOfTodayIso,
+  firstOfMonth,
   fmtDate,
   fmtDateTime,
   fmtMoney,
   fmtNumber,
   isoOrNull,
-  Loading,
-  Modal,
-  PageHeader,
-  Pager,
-  SecretPanel,
-  Toolbar,
-  daysAgo,
-  endOfTodayIso,
-  firstOfMonth,
   linesToArray,
   startOfTodayIso,
   today,
   useLoad,
-} from '../ui'
-
-function toNumber(value: string): number | null {
-  const trimmed = value.trim()
-  if (trimmed === '') return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
-}
+} from '../ui-helpers'
+import { toNumber } from './provider-form'
 
 /* ------------------------------- Dashboard -------------------------------- */
 
@@ -52,13 +37,145 @@ function rangeParams(range: RangeId): { from: string; to: string } {
   return { from: firstOfMonth(), to }
 }
 
+type UsageTotals = Record<'requests' | 'denied' | 'errors' | 'inputTokens' | 'outputTokens' | 'cost' | 'incompleteUsageRequests', number>
+
+/** Strip metrik; `key` harus sama dengan nama field UsageRow. */
+const METRICS: { key: keyof UsageTotals; label: string; format: (value: number) => string; cost?: boolean }[] = [
+  { key: 'requests', label: 'Request', format: fmtNumber },
+  { key: 'denied', label: 'Ditolak', format: fmtNumber },
+  { key: 'errors', label: 'Error', format: fmtNumber },
+  { key: 'inputTokens', label: 'Token input', format: fmtNumber },
+  { key: 'outputTokens', label: 'Token output', format: fmtNumber },
+  { key: 'cost', label: 'Biaya', format: fmtMoney, cost: true },
+  // Token diketahui tetap dihitung; biaya dari usage incomplete bukan tagihan final.
+  { key: 'incompleteUsageRequests', label: 'Usage belum lengkap', format: fmtNumber },
+]
+
+/** Token incomplete adalah batas bawah (≥); biaya tercatat bukan tagihan final (≈). */
+const lowerBoundNote = 'Batas bawah: usage belum terbukti lengkap.'
+const costNote = 'Biaya tercatat dari usage yang diketahui, bukan tagihan final: usage belum terbukti lengkap.'
+const approx = (value: number, incomplete: boolean) => (incomplete ? `≥ ${fmtNumber(value)}` : fmtNumber(value))
+const approxMoney = (value: number, incomplete: boolean) => (incomplete ? `≈ ${fmtMoney(value)}` : fmtMoney(value))
+
+interface ChartSeries {
+  label: string
+  value: (row: UsageRow) => number
+}
+
+type ChartMetricId = 'requests' | 'tokens' | 'cost' | 'errors'
+
+const CHART_METRICS: { id: ChartMetricId; label: string; series: ChartSeries[] }[] = [
+  { id: 'requests', label: 'Request', series: [{ label: 'Request', value: (row) => row.requests }] },
+  { id: 'tokens', label: 'Token', series: [{ label: 'Token (input + output)', value: (row) => row.inputTokens + row.outputTokens }] },
+  { id: 'cost', label: 'Biaya', series: [{ label: 'Biaya', value: (row) => row.cost }] },
+  {
+    id: 'errors',
+    label: 'Error + ditolak',
+    series: [
+      { label: 'Error', value: (row) => row.errors },
+      { label: 'Ditolak', value: (row) => row.denied },
+    ],
+  },
+]
+
+/* Grafik memakai persentase untuk sumbu X supaya ikut lebar kartu tanpa mengukur DOM. */
+const chartTop = 12
+const chartBottom = 178
+const chartLeft = 12
+const chartRight = 98
+const axisFormat = new Intl.NumberFormat(undefined, { notation: 'compact', maximumSignificantDigits: 2 })
+const dayTickFormat = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+
+function dayTick(value: string): string {
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? value : dayTickFormat.format(date)
+}
+
+/** Langkah "cantik" 1/2/2,5/5×10^n supaya empat tick selalu menutupi nilai maksimum. */
+function niceStep(raw: number): number {
+  if (!(raw > 0)) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(raw))
+  const normalized = raw / magnitude
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10
+  return step * magnitude
+}
+
+/** Titik polyline 112×24 seperti mockup; hanya dipanggil bila ada dua hari atau lebih. */
+function sparkPoints(values: number[]): string {
+  const min = Math.min(...values)
+  const span = Math.max(...values) - min || 1
+  return values.map((value, index) => `${((index / (values.length - 1)) * 108 + 2).toFixed(1)},${(22 - ((value - min) / span) * 20).toFixed(1)}`).join(' ')
+}
+
+function UsageChart({ rows, metric, label }: { rows: UsageRow[]; metric: ChartMetricId; label: string }) {
+  const spec = CHART_METRICS.find((item) => item.id === metric) ?? CHART_METRICS[0]
+  const max = Math.max(...rows.map((row) => Math.max(...spec.series.map((series) => series.value(row)))))
+  const step = niceStep(max / 4)
+  const top = step * 4
+  const plot = chartBottom - chartTop
+  const group = (chartRight - chartLeft) / rows.length
+  const gap = spec.series.length > 1 ? group * 0.06 : 0
+  const barWidth = (group * 0.62 - gap * (spec.series.length - 1)) / spec.series.length
+  const labelEvery = Math.ceil(rows.length / 7)
+  const money = metric === 'cost'
+
+  return (
+    <svg className="usage-chart" width="100%" height="210" role="img" aria-label={label}>
+      {[0, 1, 2, 3, 4].map((tick) => {
+        const y = chartBottom - (tick / 4) * plot
+        return (
+          <g key={tick}>
+            <line className={tick === 0 ? 'chart-axis-line' : 'chart-grid-line'} x1={`${chartLeft}%`} x2={`${chartRight}%`} y1={y} y2={y} />
+            <text className="chart-axis-label" x={`${chartLeft - 1}%`} y={y + 3} textAnchor="end">
+              {axisFormat.format(step * tick)}
+            </text>
+          </g>
+        )
+      })}
+      {rows.map((row, index) => {
+        const cluster = barWidth * spec.series.length + gap * (spec.series.length - 1)
+        const start = chartLeft + index * group + (group - cluster) / 2
+        return (
+          <g key={row.key}>
+            {spec.series.map((series, seriesIndex) => {
+              const value = series.value(row)
+              const height = Math.max((value / top) * plot, 0)
+              return (
+                <rect
+                  key={series.label}
+                  className={seriesIndex === 0 ? 'chart-bar' : 'chart-bar-alt'}
+                  x={`${(start + seriesIndex * (barWidth + gap)).toFixed(2)}%`}
+                  y={chartBottom - height}
+                  width={`${barWidth.toFixed(2)}%`}
+                  height={height}
+                >
+                  <title>{`${row.label} · ${series.label}: ${money ? fmtMoney(value) : fmtNumber(value)}`}</title>
+                </rect>
+              )
+            })}
+            {index % labelEvery === 0 ? (
+              <text className="chart-axis-label" x={`${(chartLeft + (index + 0.5) * group).toFixed(2)}%`} y={chartBottom + 16} textAnchor="middle">
+                {dayTick(row.label)}
+              </text>
+            ) : null}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
 export function DashboardPage() {
   const [range, setRange] = useState<RangeId>('today')
-  const params = rangeParams(range)
-  const daily = useLoad(() => api.get<UsageRow[]>('/admin/api/usage/summary', { ...params, groupBy: 'day' }), [params.from, params.to])
-  const byModel = useLoad(() => api.get<UsageRow[]>('/admin/api/usage/summary', { ...params, groupBy: 'model' }), [params.from, params.to])
+  const [metric, setMetric] = useState<ChartMetricId>('requests')
+  const [asTable, setAsTable] = useState(false)
+  const { from, to } = rangeParams(range)
+  const daily = useLoad(useCallback(() => api.get<UsageRow[]>('/admin/api/usage/summary', { from, to, groupBy: 'day' }), [from, to]))
+  const byModel = useLoad(useCallback(() => api.get<UsageRow[]>('/admin/api/usage/summary', { from, to, groupBy: 'model' }), [from, to]))
 
-  const totals = (daily.data ?? []).reduce(
+  const dayRows = daily.data ?? []
+  const modelRows = byModel.data ?? []
+  const totals = dayRows.reduce<UsageTotals>(
     (acc, row) => ({
       requests: acc.requests + row.requests,
       denied: acc.denied + row.denied,
@@ -66,59 +183,79 @@ export function DashboardPage() {
       inputTokens: acc.inputTokens + row.inputTokens,
       outputTokens: acc.outputTokens + row.outputTokens,
       cost: acc.cost + row.cost,
+      incompleteUsageRequests: acc.incompleteUsageRequests + row.incompleteUsageRequests,
     }),
-    { requests: 0, denied: 0, errors: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
+    { requests: 0, denied: 0, errors: 0, inputTokens: 0, outputTokens: 0, cost: 0, incompleteUsageRequests: 0 },
   )
+  const modelRequests = modelRows.reduce((sum, row) => sum + row.requests, 0)
+  const chart = CHART_METRICS.find((item) => item.id === metric) ?? CHART_METRICS[0]
 
   return (
     <>
-      <PageHeader title="Dashboard" description={`Pemakaian ${params.from} s/d ${params.to}.`} />
-      <Toolbar>
-        <div role="group" aria-label="Rentang waktu">
-          {RANGES.map((item) => (
-            <button key={item.id} type="button" className={range === item.id ? '' : 'ghost'} aria-pressed={range === item.id} onClick={() => setRange(item.id)}>
-              {item.label}
-            </button>
-          ))}
+      <PageHeader title="Dashboard" description={`Pemakaian ${from} s/d ${to}.`} />
+      <div className="dashboard-controls">
+        <div className="inline">
+          <span className="range-label">Rentang waktu</span>
+          <div className="segmented" role="group" aria-label="Rentang waktu">
+            {RANGES.map((item) => (
+              <button key={item.id} type="button" className="ghost" aria-pressed={range === item.id} onClick={() => setRange(item.id)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </Toolbar>
-      {daily.error ? <Alert>{daily.error}</Alert> : null}
-      {daily.loading ? (
-        <Loading />
-      ) : (
-        <section className="cards" aria-label="Ringkasan pemakaian">
-          <div className="card stat">
-            <span className="stat-label">Request</span>
-            <span className="stat-value">{fmtNumber(totals.requests)}</span>
+        <span className="hint">Semua nilai biaya dalam USD.</span>
+      </div>
+
+      <section className="metric-strip" aria-label="Ringkasan pemakaian">
+        {METRICS.map((item) => (
+          <div className="metric" key={item.key}>
+            <span className="metric-label">{item.label}</span>
+            <strong className={item.cost ? 'metric-value cost' : 'metric-value'}>
+              {daily.loading ? <span className="skeleton" aria-hidden="true"></span> : daily.error ? '—' : item.format(totals[item.key])}
+            </strong>
+            {!daily.loading && !daily.error && dayRows.length > 1 ? (
+              <svg className="metric-sparkline" viewBox="0 0 112 24" aria-hidden="true">
+                <polyline points={sparkPoints(dayRows.map((row) => row[item.key]))} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" />
+              </svg>
+            ) : null}
           </div>
-          <div className="card stat">
-            <span className="stat-label">Ditolak</span>
-            <span className="stat-value">{fmtNumber(totals.denied)}</span>
-          </div>
-          <div className="card stat">
-            <span className="stat-label">Error</span>
-            <span className="stat-value">{fmtNumber(totals.errors)}</span>
-          </div>
-          <div className="card stat">
-            <span className="stat-label">Token input</span>
-            <span className="stat-value">{fmtNumber(totals.inputTokens)}</span>
-          </div>
-          <div className="card stat">
-            <span className="stat-label">Token output</span>
-            <span className="stat-value">{fmtNumber(totals.outputTokens)}</span>
-          </div>
-          <div className="card stat">
-            <span className="stat-label">Biaya</span>
-            <span className="stat-value">{fmtMoney(totals.cost)}</span>
-          </div>
-        </section>
-      )}
+        ))}
+      </section>
+      {!daily.loading && !daily.error && totals.incompleteUsageRequests > 0 ? (
+        <p className="hint">
+          {totals.incompleteUsageRequests} request pada rentang ini belum melaporkan usage lengkap: token adalah
+          batas bawah yang diketahui; biaya tercatat berdasarkan token tersebut, bukan tagihan final.
+        </p>
+      ) : null}
 
       <section className="card">
-        <h2>Per hari</h2>
-        <DataTable head={['Hari', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya']}>
-          {daily.data && daily.data.length > 0 ? (
-            daily.data.map((row) => (
+        <h2>Tren pemakaian</h2>
+        <div className="chart-heading">
+          <div className="chart-tabs">
+            <div className="segmented" role="group" aria-label="Metrik grafik">
+              {CHART_METRICS.map((item) => (
+                <button key={item.id} type="button" className="ghost" aria-pressed={metric === item.id} onClick={() => setMetric(item.id)}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button type="button" className="ghost" onClick={() => setAsTable((value) => !value)}>
+            {asTable ? 'Lihat sebagai grafik' : 'Lihat sebagai tabel'}
+          </button>
+        </div>
+        {daily.error ? (
+          <Alert>{daily.error}</Alert>
+        ) : daily.loading ? (
+          <Loading />
+        ) : dayRows.length === 0 ? (
+          <div className="empty-state">
+            <strong>Belum ada pemakaian pada rentang ini.</strong>
+          </div>
+        ) : asTable ? (
+          <DataTable head={['Hari', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya', 'Belum lengkap']}>
+            {dayRows.map((row) => (
               <tr key={row.key}>
                 <td>{row.label}</td>
                 <td>{fmtNumber(row.requests)}</td>
@@ -126,35 +263,71 @@ export function DashboardPage() {
                 <td>{fmtNumber(row.errors)}</td>
                 <td>{fmtNumber(row.inputTokens)}</td>
                 <td>{fmtNumber(row.outputTokens)}</td>
-                <td>{fmtMoney(row.cost)}</td>
+                <td title={row.incompleteUsageRequests > 0 ? costNote : undefined}>
+                  {approxMoney(row.cost, row.incompleteUsageRequests > 0)}
+                </td>
+                <td title={row.incompleteUsageRequests > 0 ? lowerBoundNote : undefined}>{fmtNumber(row.incompleteUsageRequests)}</td>
               </tr>
-            ))
-          ) : (
-            <EmptyRow colSpan={7} label="Belum ada pemakaian pada rentang ini." />
-          )}
-        </DataTable>
+            ))}
+          </DataTable>
+        ) : (
+          <div className="chart-container">
+            <UsageChart rows={dayRows} metric={metric} label={`Grafik ${chart.label} per hari, ${from} s/d ${to}. Nilai harian yang sama tersedia lewat tombol "Lihat sebagai tabel".`} />
+          </div>
+        )}
       </section>
 
       <section className="card">
-        <h2>Per model</h2>
-        {byModel.error ? <Alert>{byModel.error}</Alert> : null}
-        <DataTable head={['Model', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya']}>
-          {byModel.data && byModel.data.length > 0 ? (
-            byModel.data.map((row) => (
-              <tr key={row.key}>
-                <td>{row.label}</td>
-                <td>{fmtNumber(row.requests)}</td>
-                <td>{fmtNumber(row.denied)}</td>
-                <td>{fmtNumber(row.errors)}</td>
-                <td>{fmtNumber(row.inputTokens)}</td>
-                <td>{fmtNumber(row.outputTokens)}</td>
-                <td>{fmtMoney(row.cost)}</td>
-              </tr>
-            ))
-          ) : (
-            <EmptyRow colSpan={7} />
-          )}
-        </DataTable>
+        <h2>Bauran model</h2>
+        {byModel.error ? (
+          <Alert>{byModel.error}</Alert>
+        ) : byModel.loading ? (
+          <Loading />
+        ) : modelRows.length === 0 ? (
+          <div className="empty-state">
+            <strong>Belum ada pemakaian pada rentang ini.</strong>
+          </div>
+        ) : (
+          <>
+            <div className="share-list">
+              {modelRows.map((row) => {
+                const share = modelRequests > 0 ? (row.requests / modelRequests) * 100 : 0
+                return (
+                  <div className="share-item" key={row.key}>
+                    <div className="share-head">
+                      <span className="share-name mono">{row.label}</span>
+                      <span className="share-value">
+                        {fmtNumber(row.requests)} · {share.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="share-bar">
+                      <div className="share-fill" style={{ width: `${share.toFixed(1)}%` }} />
+                    </div>
+                    <span className="share-meta">
+                      {fmtNumber(row.inputTokens + row.outputTokens)} token · {fmtMoney(row.cost)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <details className="table-details">
+              <summary>Nilai rinci per model</summary>
+              <DataTable head={['Model', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya']}>
+                {modelRows.map((row) => (
+                  <tr key={row.key}>
+                    <td>{row.label}</td>
+                    <td>{fmtNumber(row.requests)}</td>
+                    <td>{fmtNumber(row.denied)}</td>
+                    <td>{fmtNumber(row.errors)}</td>
+                    <td>{fmtNumber(row.inputTokens)}</td>
+                    <td>{fmtNumber(row.outputTokens)}</td>
+                    <td>{fmtMoney(row.cost)}</td>
+                  </tr>
+                ))}
+              </DataTable>
+            </details>
+          </>
+        )}
       </section>
     </>
   )
@@ -165,7 +338,7 @@ export function DashboardPage() {
 export function ProjectsPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const projects = useLoad(() => api.get<ProjectDto[]>('/admin/api/projects'), [])
+  const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<ProjectDto | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -198,7 +371,7 @@ export function ProjectsPage() {
       {projects.error ? <Alert>{projects.error}</Alert> : null}
       {projects.loading ? (
         <Loading />
-      ) : (
+      ) : projects.error ? null : (
         <DataTable head={['Nama', 'Status', 'Log konten', 'Retensi konten', 'Dibuat', 'Aksi']}>
           {projects.data && projects.data.length > 0 ? (
             projects.data.map((project) => (
@@ -277,7 +450,7 @@ function ProjectModal({ project, onClose, onSaved }: { project?: ProjectDto; onC
           clearRetention,
         })
       } else {
-        await api.post('/admin/api/projects', { name, status, logContent, contentRetentionDays: toNumber(contentRetentionDays) })
+        await api.post('/admin/api/projects', { name, logContent, contentRetentionDays: toNumber(contentRetentionDays) })
       }
       onSaved()
     } catch (err) {
@@ -294,20 +467,25 @@ function ProjectModal({ project, onClose, onSaved }: { project?: ProjectDto; onC
         <Field label="Nama">
           <input required value={name} onChange={(event) => setName(event.target.value)} />
         </Field>
-        <Field label="Status" hint="Suspend menolak request baru pada project ini.">
-          <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            {PROJECT_STATUSES.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </Field>
+        {project ? (
+          <Field label="Status" hint="Suspend menolak request baru pada project ini.">
+            <select value={status} onChange={(event) => setStatus(event.target.value)}>
+              {PROJECT_STATUSES.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <label className="inline">
           <input type="checkbox" checked={logContent} onChange={(event) => setLogContent(event.target.checked)} /> Simpan log isi percakapan
         </label>
-        <Field label="Retensi konten (hari)" hint="Kosongkan untuk tanpa retensi; isi 0 atau lebih.">
-          <input type="number" min={0} disabled={clearRetention} value={contentRetentionDays} onChange={(event) => setContentRetentionDays(event.target.value)} />
+        <Field
+          label="Retensi konten (hari)"
+          hint={project ? 'Isi 1–3650 hari. Kosong = tidak diubah; centang opsi di bawah untuk menghapus.' : 'Kosongkan untuk tanpa retensi; isi 1–3650 hari.'}
+        >
+          <input type="number" min={1} disabled={clearRetention} value={contentRetentionDays} onChange={(event) => setContentRetentionDays(event.target.value)} />
         </Field>
         {project ? (
           <label className="inline">
@@ -333,8 +511,8 @@ export function KeysPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
   const [projectFilter, setProjectFilter] = useState('')
-  const projects = useLoad(() => api.get<ProjectDto[]>('/admin/api/projects'), [])
-  const keys = useLoad(() => api.get<ApiKeyDto[]>('/admin/api/keys', { projectId: projectFilter || undefined }), [projectFilter])
+  const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
+  const keys = useLoad(useCallback(() => api.get<ApiKeyDto[]>('/admin/api/keys', { projectId: projectFilter || undefined }), [projectFilter]))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<ApiKeyDto | null>(null)
   const [plaintext, setPlaintext] = useState<string | null>(null)
@@ -366,6 +544,7 @@ export function KeysPage() {
       />
       {plaintext ? <SecretPanel label="API key baru" value={plaintext} onDismiss={() => setPlaintext(null)} /> : null}
       {error ? <Alert>{error}</Alert> : null}
+      {projects.error ? <Alert>{projects.error}</Alert> : null}
       <Toolbar>
         <Field label="Filter project">
           <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
@@ -381,7 +560,7 @@ export function KeysPage() {
       {keys.error ? <Alert>{keys.error}</Alert> : null}
       {keys.loading ? (
         <Loading />
-      ) : (
+      ) : keys.error ? null : (
         <DataTable head={['Nama', 'Project', 'Prefix', 'IP diizinkan', 'Kedaluwarsa', 'Terakhir dipakai', 'Status', 'Aksi']}>
           {keys.data && keys.data.length > 0 ? (
             keys.data.map((key) => (
@@ -529,9 +708,9 @@ function KeyModal({ keyItem, projects, onClose, onSaved }: { keyItem?: ApiKeyDto
 export function PoliciesPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const policies = useLoad(() => api.get<PolicyDto[]>('/admin/api/policies'), [])
-  const projects = useLoad(() => api.get<ProjectDto[]>('/admin/api/projects'), [])
-  const keys = useLoad(() => api.get<ApiKeyDto[]>('/admin/api/keys'), [])
+  const policies = useLoad(useCallback(() => api.get<PolicyDto[]>('/admin/api/policies'), []))
+  const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
+  const keys = useLoad(useCallback(() => api.get<ApiKeyDto[]>('/admin/api/keys'), []))
   const [scope, setScope] = useState<'tenant' | 'project' | 'key'>('tenant')
   const [scopeId, setScopeId] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -554,9 +733,17 @@ export function PoliciesPage() {
     <>
       <PageHeader title="Policies" description="Batas kuota dan model yang diizinkan per tenant, project, atau API key." />
       {error ? <Alert>{error}</Alert> : null}
+      {projects.error ? <Alert>{projects.error}</Alert> : null}
+      {keys.error ? <Alert>{keys.error}</Alert> : null}
       <Toolbar>
         <Field label="Scope">
-          <select value={scope} onChange={(event) => setScope(event.target.value as 'tenant' | 'project' | 'key')}>
+          <select
+            value={scope}
+            onChange={(event) => {
+              setScope(event.target.value as 'tenant' | 'project' | 'key')
+              setScopeId('')
+            }}
+          >
             <option value="tenant">Tenant</option>
             <option value="project">Project</option>
             <option value="key">API key</option>
@@ -589,11 +776,11 @@ export function PoliciesPage() {
       </Toolbar>
 
       {policies.error ? <Alert>{policies.error}</Alert> : null}
-      {effectiveScopeId === '' && scope !== 'tenant' ? (
+      {policies.error ? null : effectiveScopeId === '' && scope !== 'tenant' ? (
         <p className="muted">Pilih {scope === 'project' ? 'project' : 'API key'} untuk melihat policy-nya.</p>
       ) : (
         <PolicyEditor
-          key={`${scope}:${effectiveScopeId}`}
+          key={`${scope}:${effectiveScopeId}:${current ? 'set' : 'new'}`}
           scope={scope}
           scopeId={effectiveScopeId}
           policy={current}
@@ -606,7 +793,7 @@ export function PoliciesPage() {
         <h2>Semua policy</h2>
         {policies.loading ? (
           <Loading />
-        ) : (
+        ) : policies.error ? null : (
           <DataTable head={['Scope', 'ID', 'Max token/req', 'Req/menit', 'Kuota harian', 'Kuota bulanan', 'Budget bulanan', 'Model diizinkan', 'Status', '']}>
             {policies.data && policies.data.length > 0 ? (
               policies.data.map((policy) => (
@@ -670,6 +857,7 @@ function PolicyEditor({
     setBusy(true)
     setError(null)
     setMessage(null)
+    const models = linesToArray(allowedModels)
     try {
       await api.put(`/admin/api/policies/${scope}/${scopeId}`, {
         maxTokensPerRequest: toNumber(maxTokensPerRequest),
@@ -677,7 +865,7 @@ function PolicyEditor({
         dailyTokenQuota: toNumber(dailyTokenQuota),
         monthlyTokenQuota: toNumber(monthlyTokenQuota),
         monthlyBudget: toNumber(monthlyBudget),
-        allowedModels: linesToArray(allowedModels),
+        allowedModels: models.length > 0 ? models : null,
         enabled,
       })
       setMessage('Policy disimpan.')
@@ -744,7 +932,7 @@ export function UsagePage() {
   const [from, setFrom] = useState(daysAgo(6))
   const [to, setTo] = useState(today())
   const [groupBy, setGroupBy] = useState<'day' | 'project' | 'model' | 'key'>('day')
-  const summary = useLoad(() => api.get<UsageRow[]>('/admin/api/usage/summary', { from, to, groupBy }), [from, to, groupBy])
+  const summary = useLoad(useCallback(() => api.get<UsageRow[]>('/admin/api/usage/summary', { from, to, groupBy }), [from, to, groupBy]))
 
   const [logFrom, setLogFrom] = useState(startOfTodayIso())
   const [logTo, setLogTo] = useState(endOfTodayIso())
@@ -754,27 +942,31 @@ export function UsagePage() {
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
-  const projects = useLoad(() => api.get<ProjectDto[]>('/admin/api/projects'), [])
-  const models = useLoad(() => api.get<ModelDto[]>('/admin/api/models'), [])
-  const keys = useLoad(() => api.get<ApiKeyDto[]>('/admin/api/keys'), [])
+  const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
+  const models = useLoad(useCallback(() => api.get<ModelDto[]>('/admin/api/models'), []))
+  const keys = useLoad(useCallback(() => api.get<ApiKeyDto[]>('/admin/api/keys'), []))
   const logs = useLoad(
-    () =>
-      api.get<Page<UsageLogItem>>('/admin/api/usage/logs', {
-        from: isoOrNull(logFrom),
-        to: isoOrNull(logTo),
-        projectId: projectId || undefined,
-        modelId: modelId || undefined,
-        keyId: keyId || undefined,
-        status: status || undefined,
-        page,
-        pageSize,
-      }),
-    [logFrom, logTo, projectId, modelId, keyId, status, page, pageSize],
+    useCallback(
+      () =>
+        api.get<Page<UsageLogItem>>('/admin/api/usage/logs', {
+          from: isoOrNull(logFrom),
+          to: isoOrNull(logTo),
+          projectId: projectId || undefined,
+          modelId: modelId || undefined,
+          keyId: keyId || undefined,
+          status: status || undefined,
+          page,
+          pageSize,
+        }),
+      [logFrom, logTo, projectId, modelId, keyId, status, page, pageSize],
+    ),
   )
   const [exportError, setExportError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
 
   async function exportCsv() {
     setExportError(null)
+    setExporting(true)
     try {
       await downloadFile(
         '/admin/api/usage/export',
@@ -790,6 +982,8 @@ export function UsagePage() {
       )
     } catch (err) {
       setExportError(errorMessage(err))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -818,8 +1012,8 @@ export function UsagePage() {
         {summary.error ? <Alert>{summary.error}</Alert> : null}
         {summary.loading ? (
           <Loading />
-        ) : (
-          <DataTable head={[groupBy === 'day' ? 'Hari' : 'Nama', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya']}>
+        ) : summary.error ? null : (
+          <DataTable head={[groupBy === 'day' ? 'Hari' : 'Nama', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya', 'Belum lengkap']}>
             {summary.data && summary.data.length > 0 ? (
               summary.data.map((row) => (
                 <tr key={row.key}>
@@ -829,11 +1023,16 @@ export function UsagePage() {
                   <td>{fmtNumber(row.errors)}</td>
                   <td>{fmtNumber(row.inputTokens)}</td>
                   <td>{fmtNumber(row.outputTokens)}</td>
-                  <td>{fmtMoney(row.cost)}</td>
+                  <td title={row.incompleteUsageRequests > 0 ? costNote : undefined}>
+                    {approxMoney(row.cost, row.incompleteUsageRequests > 0)}
+                  </td>
+                  <td title={row.incompleteUsageRequests > 0 ? lowerBoundNote : undefined}>
+                    {fmtNumber(row.incompleteUsageRequests)}
+                  </td>
                 </tr>
               ))
             ) : (
-              <EmptyRow colSpan={7} />
+              <EmptyRow colSpan={8} />
             )}
           </DataTable>
         )}
@@ -842,6 +1041,9 @@ export function UsagePage() {
       <section className="card">
         <h2>Log request</h2>
         {exportError ? <Alert>{exportError}</Alert> : null}
+        {projects.error ? <Alert>{projects.error}</Alert> : null}
+        {models.error ? <Alert>{models.error}</Alert> : null}
+        {keys.error ? <Alert>{keys.error}</Alert> : null}
         <Toolbar>
           <Field label="Dari">
             <input type="datetime-local" value={logFrom} onChange={(event) => { setLogFrom(event.target.value); setPage(1) }} />
@@ -895,14 +1097,14 @@ export function UsagePage() {
               <option value={200}>200</option>
             </select>
           </Field>
-          <button type="button" onClick={() => void exportCsv()}>
-            Export CSV
+          <button type="button" onClick={() => void exportCsv()} disabled={exporting}>
+            {exporting ? 'Mengekspor…' : 'Export CSV'}
           </button>
         </Toolbar>
         {logs.error ? <Alert>{logs.error}</Alert> : null}
         {logs.loading ? (
           <Loading />
-        ) : (
+        ) : logs.error ? null : (
           <>
             <DataTable head={['Waktu', 'Request', 'Status', 'HTTP', 'Alasan', 'Input', 'Output', 'Cache', 'Biaya', 'Latensi', 'Attempt', 'Project', 'Model', 'Key', canReadBody ? 'Isi' : '']}>
               {logs.data && logs.data.items.length > 0 ? (
@@ -915,10 +1117,10 @@ export function UsagePage() {
                     </td>
                     <td>{log.httpStatus}</td>
                     <td>{log.deniedReason ?? '—'}</td>
-                    <td>{fmtNumber(log.inputTokens)}</td>
-                    <td>{fmtNumber(log.outputTokens)}</td>
-                    <td>{fmtNumber(log.cachedTokens)}</td>
-                    <td>{fmtMoney(log.cost)}</td>
+                    <td title={log.usageIncomplete ? lowerBoundNote : undefined}>{approx(log.inputTokens, log.usageIncomplete)}</td>
+                    <td title={log.usageIncomplete ? lowerBoundNote : undefined}>{approx(log.outputTokens, log.usageIncomplete)}</td>
+                    <td title={log.usageIncomplete ? lowerBoundNote : undefined}>{approx(log.cachedTokens, log.usageIncomplete)}</td>
+                    <td title={log.usageIncomplete ? costNote : undefined}>{approxMoney(log.cost, log.usageIncomplete)}</td>
                     <td>{log.latencyMs} ms</td>
                     <td>{log.attempts}</td>
                     <td className="mono">{log.projectId ? log.projectId.slice(0, 8) : '—'}</td>
@@ -949,7 +1151,7 @@ export function UsagePage() {
 
 /** Privacy viewer: isi prompt/response hanya tersedia bila project menyimpan konten dan belum kedaluwarsa. */
 function UsageBodyModal({ log, onClose }: { log: UsageLogItem; onClose: () => void }) {
-  const body = useLoad(() => api.get<UsageBodyDto>(`/admin/api/usage/${log.id}/body`), [log.id])
+  const body = useLoad(useCallback(() => api.get<UsageBodyDto>(`/admin/api/usage/${log.id}/body`), [log.id]))
 
   return (
     <Modal title={`Isi request — log #${log.id}`} onClose={onClose} wide>
@@ -985,7 +1187,8 @@ function prettyJson(value: string | null): string {
 /* --------------------------------- Users ---------------------------------- */
 
 export function UsersPage() {
-  const users = useLoad(() => api.get<AdminUser[]>('/admin/api/users'), [])
+  const { user: currentUser } = useAuth()
+  const users = useLoad(useCallback(() => api.get<AdminUser[]>('/admin/api/users'), []))
   const [inviting, setInviting] = useState(false)
   const [inviteToken, setInviteToken] = useState<string | null>(null)
   const [resetToken, setResetToken] = useState<{ email: string; token: string } | null>(null)
@@ -1036,7 +1239,7 @@ export function UsersPage() {
       {users.error ? <Alert>{users.error}</Alert> : null}
       {users.loading ? (
         <Loading />
-      ) : (
+      ) : users.error ? null : (
         <DataTable head={['Email', 'Nama', 'Peran', 'Status', 'Login terakhir', 'Dibuat', 'Aksi']}>
           {users.data && users.data.length > 0 ? (
             users.data.map((member) => (
@@ -1046,8 +1249,9 @@ export function UsersPage() {
                 <td>
                   <select
                     value={member.role}
-                    disabled={busyId === member.id}
+                    disabled={busyId === member.id || member.id === currentUser?.id}
                     aria-label={`Peran ${member.email}`}
+                    title={member.id === currentUser?.id ? 'Tidak bisa mengubah peran atau status akun sendiri.' : undefined}
                     onChange={(event) => void update(member, { role: event.target.value as Role })}
                   >
                     {ROLES.map((role) => (
@@ -1062,8 +1266,9 @@ export function UsersPage() {
                     <input
                       type="checkbox"
                       checked={member.isActive}
-                      disabled={busyId === member.id}
+                      disabled={busyId === member.id || member.id === currentUser?.id}
                       aria-label={`Aktif ${member.email}`}
+                      title={member.id === currentUser?.id ? 'Tidak bisa mengubah peran atau status akun sendiri.' : undefined}
                       onChange={(event) => void update(member, { isActive: event.target.checked })}
                     />
                     {member.isActive ? 'aktif' : 'nonaktif'}
@@ -1158,14 +1363,16 @@ export function AuditPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const audit = useLoad(
-    () =>
-      api.get<Page<AuditItem>>('/admin/api/audit', {
-        from: isoOrNull(from),
-        to: isoOrNull(to),
-        page,
-        pageSize,
-      }),
-    [from, to, page, pageSize],
+    useCallback(
+      () =>
+        api.get<Page<AuditItem>>('/admin/api/audit', {
+          from: isoOrNull(from),
+          to: isoOrNull(to),
+          page,
+          pageSize,
+        }),
+      [from, to, page, pageSize],
+    ),
   )
 
   return (
@@ -1190,7 +1397,7 @@ export function AuditPage() {
       {audit.error ? <Alert>{audit.error}</Alert> : null}
       {audit.loading ? (
         <Loading />
-      ) : (
+      ) : audit.error ? null : (
         <>
           <DataTable head={['Waktu', 'User', 'Action', 'Entity', 'Entity ID', 'IP', 'Detail']}>
             {audit.data && audit.data.items.length > 0 ? (

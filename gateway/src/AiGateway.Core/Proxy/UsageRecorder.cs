@@ -16,9 +16,10 @@ public sealed class UsageRecorder(GatewayDbContext db, ILogger<UsageRecorder> lo
           ON t.tenant_id = s.tenant_id AND t.project_id = s.project_id AND t.api_key_id = s.api_key_id
              AND t.model_id = s.model_id AND t.day = s.day
         WHEN MATCHED THEN UPDATE SET requests = t.requests + 1, denied = t.denied + @denied, errors = t.errors + @errors,
-             input_tokens = t.input_tokens + @in, output_tokens = t.output_tokens + @out, cost = t.cost + @cost
-        WHEN NOT MATCHED THEN INSERT (tenant_id, project_id, api_key_id, model_id, day, requests, denied, errors, input_tokens, output_tokens, cost)
-             VALUES (@tenant, @project, @key, @model, @day, 1, @denied, @errors, @in, @out, @cost);
+             input_tokens = t.input_tokens + @in, output_tokens = t.output_tokens + @out, cost = t.cost + @cost,
+             incomplete_usage_requests = t.incomplete_usage_requests + @incomplete
+        WHEN NOT MATCHED THEN INSERT (tenant_id, project_id, api_key_id, model_id, day, requests, denied, errors, input_tokens, output_tokens, cost, incomplete_usage_requests)
+             VALUES (@tenant, @project, @key, @model, @day, 1, @denied, @errors, @in, @out, @cost, @incomplete);
         """;
 
     /// <summary>Catat penolakan untuk key yang sudah terverifikasi.</summary>
@@ -31,6 +32,8 @@ public sealed class UsageRecorder(GatewayDbContext db, ILogger<UsageRecorder> lo
             RequestId = caller.RequestId,
             Status = UsageStatuses.Denied,
             HttpStatus = httpStatus,
+            // Tidak ada panggilan provider: baris ini bukan batas bawah, jadi tidak pernah ditandai incomplete.
+            UsageIncomplete = false,
             DeniedReason = reason,
             ClientIp = caller.ClientIp,
             UserAgent = caller.UserAgent,
@@ -59,6 +62,7 @@ public sealed class UsageRecorder(GatewayDbContext db, ILogger<UsageRecorder> lo
                 new SqlParameter("@errors", entry.Status == UsageStatuses.Error ? 1 : 0),
                 new SqlParameter("@in", (long)entry.InputTokens),
                 new SqlParameter("@out", (long)entry.OutputTokens),
+                new SqlParameter("@incomplete", entry.UsageIncomplete ? 1 : 0),
                 new SqlParameter("@cost", SqlDbType.Decimal) { Precision = 18, Scale = 8, Value = entry.Cost });
             await tx.CommitAsync();
         }

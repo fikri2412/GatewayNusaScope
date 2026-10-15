@@ -62,12 +62,14 @@ app.MapAdminModels();
 app.MapAdminResources();
 app.MapPlatformManagement();
 app.MapMaintenance();
+app.MapSettings();
+app.MapSearchProviders();
 
 // Path API yang tidak dikenal → 404 JSON; selain itu layani UI (SPA) bila sudah di-build.
 app.MapFallback(async http =>
 {
     var path = http.Request.Path;
-    if (path.StartsWithSegments("/admin/api") || path.StartsWithSegments("/platform/api") || path.StartsWithSegments("/v1"))
+    if (path.StartsWithSegments("/admin/api") || path.StartsWithSegments("/admin/providers") || path.StartsWithSegments("/platform/api") || path.StartsWithSegments("/client/api") || path.StartsWithSegments("/v1"))
         throw GatewayException.NotFound("Endpoint");
     var index = app.Environment.WebRootFileProvider.GetFileInfo("index.html");
     if (!index.Exists)

@@ -264,6 +264,217 @@ namespace AiGateway.Core.Data.Migrations
                     b.ToTable("api_keys", (string)null);
                 });
 
+            modelBuilder.Entity("AiGateway.Core.Domain.AppSetting", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Namespace")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("namespace");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long?>("UpdatedByUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("value");
+
+                    b.Property<string>("ValueType")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)")
+                        .HasColumnName("value_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UpdatedByUserId");
+
+                    b.HasIndex("TenantId", "Namespace", "Key")
+                        .IsUnique();
+
+                    b.ToTable("app_settings", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_app_settings_value_type", "[value_type] IN ('int','bool','text')");
+                        });
+                });
+
+            modelBuilder.Entity("AiGateway.Core.Domain.AppStatusReport", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ActivePoliciesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("active_policies_json");
+
+                    b.Property<long>("ApiKeyId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("api_key_id");
+
+                    b.Property<string>("EffectiveValuesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("effective_values_json");
+
+                    b.Property<string>("IgnoredKeysJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("ignored_keys_json");
+
+                    b.Property<long>("JobsDone")
+                        .HasColumnType("bigint")
+                        .HasColumnName("jobs_done");
+
+                    b.Property<long>("JobsFailed")
+                        .HasColumnType("bigint")
+                        .HasColumnName("jobs_failed");
+
+                    b.Property<long>("JobsPending")
+                        .HasColumnType("bigint")
+                        .HasColumnName("jobs_pending");
+
+                    b.Property<long>("JobsProcessing")
+                        .HasColumnType("bigint")
+                        .HasColumnName("jobs_processing");
+
+                    b.Property<DateTime?>("LastConfigSuccessAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_config_success_at");
+
+                    b.Property<string>("Namespace")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("namespace");
+
+                    b.Property<DateTime>("ObservedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<string>("PolicyHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("policy_hash");
+
+                    b.Property<long>("ProjectId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("project_id");
+
+                    b.Property<string>("PromptHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("prompt_hash");
+
+                    b.Property<long>("QueueDone")
+                        .HasColumnType("bigint")
+                        .HasColumnName("queue_done");
+
+                    b.Property<long>("QueueFailed")
+                        .HasColumnType("bigint")
+                        .HasColumnName("queue_failed");
+
+                    b.Property<long>("QueuePending")
+                        .HasColumnType("bigint")
+                        .HasColumnName("queue_pending");
+
+                    b.Property<long>("QueueProcessing")
+                        .HasColumnType("bigint")
+                        .HasColumnName("queue_processing");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("received_at");
+
+                    b.Property<string>("RejectedKeysJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("rejected_keys_json");
+
+                    b.Property<int>("ReportIntervalSeconds")
+                        .HasColumnType("int")
+                        .HasColumnName("report_interval_seconds");
+
+                    b.Property<string>("SourceSettingsVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_settings_version");
+
+                    b.Property<string>("SupportedKeysJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("supported_keys_json");
+
+                    b.Property<string>("SyncStatus")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("sync_status");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Namespace");
+
+                    b.HasIndex("TenantId", "ApiKeyId", "Namespace")
+                        .IsUnique();
+
+                    b.ToTable("app_status_reports", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_app_status_reports_sync_status", "[sync_status] IN ('local','synced','rejected','last-known-good')");
+                        });
+                });
+
             modelBuilder.Entity("AiGateway.Core.Domain.AuditLog", b =>
                 {
                     b.Property<long>("Id")
@@ -529,6 +740,18 @@ namespace AiGateway.Core.Data.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion")
                         .HasColumnName("row_version");
+
+                    b.Property<bool?>("SupportsStreaming")
+                        .HasColumnType("bit")
+                        .HasColumnName("supports_streaming");
+
+                    b.Property<bool?>("SupportsTools")
+                        .HasColumnType("bit")
+                        .HasColumnName("supports_tools");
+
+                    b.Property<bool?>("SupportsVision")
+                        .HasColumnType("bit")
+                        .HasColumnName("supports_vision");
 
                     b.Property<long>("TenantId")
                         .HasColumnType("bigint")
@@ -1203,6 +1426,240 @@ namespace AiGateway.Core.Data.Migrations
                     b.ToTable("request_bodies", (string)null);
                 });
 
+            modelBuilder.Entity("AiGateway.Core.Domain.SearchProviderConfig", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ApiKeyEncrypted")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("api_key_encrypted");
+
+                    b.Property<string>("BaseUri")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("base_uri");
+
+                    b.Property<string>("Capabilities")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("capabilities");
+
+                    b.Property<decimal>("CostPerExtract")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)")
+                        .HasColumnName("cost_per_extract");
+
+                    b.Property<decimal>("CostPerSearch")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)")
+                        .HasColumnName("cost_per_search");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<string>("ErrorMappingOverride")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("error_mapping_override");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_enabled");
+
+                    b.Property<string>("KeyHint")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("key_hint");
+
+                    b.Property<decimal?>("MonthlyBudget")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)")
+                        .HasColumnName("monthly_budget");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("PublicId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("public_id")
+                        .HasDefaultValueSql("NEWID()");
+
+                    b.Property<string>("ResetPolicy")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("reset_policy");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion")
+                        .HasColumnName("row_version");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("type");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Weight")
+                        .HasColumnType("int")
+                        .HasColumnName("weight");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique()
+                        .HasFilter("[deleted_at] IS NULL");
+
+                    b.ToTable("search_provider_configs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_search_provider_configs_costs", "[cost_per_search] >= 0 AND [cost_per_extract] >= 0 AND ([monthly_budget] IS NULL OR [monthly_budget] >= 0)");
+
+                            t.HasCheckConstraint("ck_search_provider_configs_reset_policy", "[reset_policy] IN ('first_of_month_utc','rolling_30_days','manual')");
+
+                            t.HasCheckConstraint("ck_search_provider_configs_type", "LEN([type]) BETWEEN 1 AND 50");
+
+                            t.HasCheckConstraint("ck_search_provider_configs_weight", "[weight] >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("AiGateway.Core.Domain.SearchProviderState", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AdminGeneration")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("admin_generation");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("int")
+                        .HasColumnName("consecutive_failures");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<long>("FailoverCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("failover_count");
+
+                    b.Property<long>("FailureCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("failure_count");
+
+                    b.Property<long>("Generation")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("generation");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTime?>("LastSuccessAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_success_at");
+
+                    b.Property<DateTime>("PeriodStart")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("period_start");
+
+                    b.Property<Guid?>("ProbeLeaseId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("probe_lease_id");
+
+                    b.Property<DateTime?>("ProbeLeaseUntil")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("probe_lease_until");
+
+                    b.Property<long>("ProviderId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("provider_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("SuccessCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("success_count");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UnavailableUntil")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("unavailable_until");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<decimal>("UsedThisPeriod")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)")
+                        .HasColumnName("used_this_period");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("search_provider_states", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_search_provider_states_status", "[status] IN ('available','rate_limited','exhausted','broken','disabled')");
+                        });
+                });
+
             modelBuilder.Entity("AiGateway.Core.Domain.Tenant", b =>
                 {
                     b.Property<long>("Id")
@@ -1296,6 +1753,10 @@ namespace AiGateway.Core.Data.Migrations
                     b.Property<long>("Errors")
                         .HasColumnType("bigint")
                         .HasColumnName("errors");
+
+                    b.Property<long>("IncompleteUsageRequests")
+                        .HasColumnType("bigint")
+                        .HasColumnName("incomplete_usage_requests");
 
                     b.Property<long>("InputTokens")
                         .HasColumnType("bigint")
@@ -1444,6 +1905,10 @@ namespace AiGateway.Core.Data.Migrations
                     b.Property<int?>("UpstreamStatus")
                         .HasColumnType("int")
                         .HasColumnName("upstream_status");
+
+                    b.Property<bool>("UsageIncomplete")
+                        .HasColumnType("bit")
+                        .HasColumnName("usage_incomplete");
 
                     b.Property<string>("UserAgent")
                         .HasMaxLength(300)
@@ -1787,6 +2252,29 @@ namespace AiGateway.Core.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("AiGateway.Core.Domain.AppSetting", b =>
+                {
+                    b.HasOne("AiGateway.Core.Domain.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiGateway.Core.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UpdatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("AiGateway.Core.Domain.AppStatusReport", b =>
+                {
+                    b.HasOne("AiGateway.Core.Domain.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("AiGateway.Core.Domain.CatalogModel", b =>
                 {
                     b.HasOne("AiGateway.Core.Domain.ProviderTemplate", null)
@@ -1893,6 +2381,30 @@ namespace AiGateway.Core.Data.Migrations
                     b.HasOne("AiGateway.Core.Domain.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiGateway.Core.Domain.SearchProviderConfig", b =>
+                {
+                    b.HasOne("AiGateway.Core.Domain.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiGateway.Core.Domain.SearchProviderState", b =>
+                {
+                    b.HasOne("AiGateway.Core.Domain.SearchProviderConfig", null)
+                        .WithMany()
+                        .HasForeignKey("ProviderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiGateway.Core.Domain.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

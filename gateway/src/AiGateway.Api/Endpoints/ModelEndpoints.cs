@@ -18,7 +18,8 @@ public sealed record PriceDto(
 
 public sealed record ModelDto(
     Guid Id, string Alias, string? Description, int? MaxOutputTokens, bool Enabled,
-    IReadOnlyList<RouteDto> Routes, PriceDto? Price, DateTime CreatedAt);
+    IReadOnlyList<RouteDto> Routes, PriceDto? Price, DateTime CreatedAt, bool? SupportsTools, bool? SupportsStreaming,
+    bool? SupportsVision);
 
 public sealed record RouteInput(Guid ProviderId, string? UpstreamModel, int? Priority, int? Weight);
 
@@ -26,9 +27,13 @@ public sealed record PriceInput(
     decimal Input, decimal Output, decimal? CacheRead, decimal? CacheWrite, string? Currency, TierDto[]? Tiers);
 
 public sealed record CreateModelRequest(
-    string? Alias, string? Description, int? MaxOutputTokens, RouteInput[]? Routes, PriceInput? Price);
+    string? Alias, string? Description, int? MaxOutputTokens, bool? SupportsTools, bool? SupportsStreaming,
+    RouteInput[]? Routes, PriceInput? Price, bool? SupportsVision);
 
-public sealed record UpdateModelRequest(string? Description, bool? Enabled, int? MaxOutputTokens, bool? ClearMaxOutputTokens);
+public sealed record UpdateModelRequest(
+    string? Description, bool? Enabled, int? MaxOutputTokens, bool? ClearMaxOutputTokens,
+    bool? SupportsTools, bool? ClearSupportsTools, bool? SupportsStreaming, bool? ClearSupportsStreaming,
+    bool? SupportsVision, bool? ClearSupportsVision);
 
 public sealed record ReplaceRoutesRequest(RouteInput[]? Routes);
 
@@ -74,7 +79,7 @@ public static class ModelEndpoints
             return new ModelDto(
                 m.PublicId, m.Alias, m.Description, m.MaxOutputTokens, m.Enabled,
                 routes.Where(r => r.ModelId == m.Id).Select(r => new RouteDto(r.ProviderPublicId, r.ProviderName, r.UpstreamModel, r.Priority, r.Weight, r.Enabled)).ToList(),
-                price, m.CreatedAt);
+                price, m.CreatedAt, m.SupportsTools, m.SupportsStreaming, m.SupportsVision);
         }).ToList();
     }
 
@@ -98,7 +103,7 @@ public static class ModelEndpoints
         var spec = new ModelSpec(r.Alias ?? "", routes.FirstOrDefault()?.UpstreamModel ?? "", r.MaxOutputTokens,
             r.Price?.Input, r.Price?.Output, r.Price?.Currency ?? "USD", r.Price?.CacheRead, r.Price?.CacheWrite,
             r.Price?.Tiers?.Select(t => new PriceTier(t.MinInputTokens, t.Input, t.Output, t.CacheRead, t.CacheWrite)).ToList(),
-            r.Description);
+            r.Description, r.SupportsTools, r.SupportsStreaming, r.SupportsVision);
         var model = await prov.CreateModelAsync(spec, routes, ct);
         await audit.WriteAsync("model.create", "model", model.PublicId.ToString(), new { model.Alias, routes = routes.Count });
         return Results.Created($"/admin/api/models/{model.PublicId}", (await LoadAsync(db, model.PublicId, ct)).First());
@@ -108,7 +113,9 @@ public static class ModelEndpoints
         Guid id, UpdateModelRequest r, GatewayDbContext db, PublicIdResolver ids, ProvisioningService prov, AuditWriter audit, CancellationToken ct)
     {
         await prov.UpdateModelAsync(await ids.ModelAsync(id, ct),
-            new ModelPatch(r.Description, r.Enabled, r.MaxOutputTokens, r.ClearMaxOutputTokens == true), ct);
+            new ModelPatch(r.Description, r.Enabled, r.MaxOutputTokens, r.ClearMaxOutputTokens == true,
+                r.SupportsTools, r.ClearSupportsTools == true, r.SupportsStreaming, r.ClearSupportsStreaming == true,
+                r.SupportsVision, r.ClearSupportsVision == true), ct);
         await audit.WriteAsync("model.update", "model", id.ToString());
         return Results.Ok((await LoadAsync(db, id, ct)).First());
     }

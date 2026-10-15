@@ -11,6 +11,10 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.17" />
     <PackageReference Include="ClosedXML" Version="0.*" />
     <PackageReference Include="QuestPDF" Version="2025.*" />
+    <!-- Dokumen 6C: teks PDF (PdfPig), render halaman (PDFtoImage + PDFium native), dan decode/encode gambar (SkiaSharp). -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="PDFtoImage" Version="5.2.0" />
+    <PackageReference Include="SkiaSharp" Version="3.119.1" />
   </ItemGroup>
 
   <ItemGroup>

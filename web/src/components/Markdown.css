@@ -1,0 +1,22 @@
+/* Markdown jawaban assistant: elemen blok dirapatkan ke ritme chat, bukan ritme dokumen. */
+.md-body { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0 0 12px; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 { margin: 16px 0 8px; font-size: var(--ns-text-lg); font-weight: 600; line-height: 1.4; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: var(--ns-text-base); }
+.md-body ul, .md-body ol { margin: 0 0 12px; padding-left: 22px; }
+.md-body li { margin: 4px 0; }
+.md-body li > p { margin: 0; }
+.md-body blockquote { margin: 0 0 12px; padding: 2px 12px; border-left: 2px solid var(--ns-accent-soft); color: var(--ns-text-3); }
+.md-body blockquote > :last-child { margin-bottom: 0; }
+.md-body hr { margin: 16px 0; border: 0; border-top: 1px solid var(--ns-border); }
+.md-body a { color: var(--ns-accent); }
+.md-body code { padding: 2px 5px; border-radius: var(--ns-radius-xs); background: var(--ns-muted); font-family: var(--ns-font-mono); font-size: 13px; }
+.md-code-block { margin: 0 0 12px; padding: 12px 14px; border-radius: var(--ns-radius-lg); overflow-x: auto; font-family: var(--ns-font-mono); font-size: 13px; line-height: 1.6; }
+.md-code-block code { padding: 0; background: none; font-size: inherit; }
+.md-table-scroll { max-width: 100%; margin: 0 0 12px; overflow-x: auto; }
+.md-table-scroll table { border-collapse: collapse; font-size: 13px; }
+.md-table-scroll th, .md-table-scroll td { padding: 6px 10px; border: 1px solid var(--ns-border); text-align: left; }
+.md-table-scroll th { background: var(--ns-muted); font-weight: 600; }
+.md-image-alt { color: var(--ns-text-muted); font-size: 13px; font-style: italic; }

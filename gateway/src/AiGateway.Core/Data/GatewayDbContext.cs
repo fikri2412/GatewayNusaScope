@@ -3,6 +3,7 @@ using AiGateway.Core.Domain;
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace AiGateway.Core.Data;
 
@@ -38,15 +39,21 @@ public class GatewayDbContext(DbContextOptions<GatewayDbContext> options, Tenant
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
     public DbSet<Policy> Policies => Set<Policy>();
     public DbSet<UsageLog> UsageLogs => Set<UsageLog>();
+    public DbSet<AppSetting> AppSettings => Set<AppSetting>();
+    public DbSet<AppStatusReport> AppStatusReports => Set<AppStatusReport>();
     public DbSet<UsageDaily> UsageDailies => Set<UsageDaily>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
+    public DbSet<SearchProviderConfig> SearchProviderConfigs => Set<SearchProviderConfig>();
+    public DbSet<SearchProviderState> SearchProviderStates => Set<SearchProviderState>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         string In(string column, params string[] values) =>
             $"[{column}] IN ({string.Join(",", values.Select(v => $"'{v}'"))})";
+        var utcDates = new ValueConverter<DateTime, DateTime>(
+            value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
 
         b.Entity<Plan>(e =>
         {
@@ -238,6 +245,80 @@ public class GatewayDbContext(DbContextOptions<GatewayDbContext> options, Tenant
             e.HasIndex(x => new { x.TenantId, x.Scope, x.ScopeId }).IsUnique();
         });
 
+        b.Entity<AppSetting>(e =>
+        {
+            e.ToTable("app_settings", t => t.HasCheckConstraint("ck_app_settings_value_type",
+                In("value_type", SettingValueTypes.All)));
+            e.Property(x => x.Namespace).HasMaxLength(50);
+            e.Property(x => x.Key).HasMaxLength(100);
+            e.Property(x => x.Value).HasMaxLength(2000);
+            e.Property(x => x.ValueType).HasMaxLength(10);
+            e.Property(x => x.Description).HasMaxLength(200);
+            e.HasIndex(x => new { x.TenantId, x.Namespace, x.Key }).IsUnique();
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UpdatedByUserId);
+        });
+
+        b.Entity<AppStatusReport>(e =>
+        {
+            e.ToTable("app_status_reports", t => t.HasCheckConstraint("ck_app_status_reports_sync_status",
+                In("sync_status", AppStatusSyncStatuses.All)));
+            e.Property(x => x.Namespace).HasMaxLength(50);
+            e.Property(x => x.SourceSettingsVersion).HasMaxLength(64);
+            e.Property(x => x.PolicyHash).HasMaxLength(64);
+            e.Property(x => x.PromptHash).HasMaxLength(64);
+            e.Property(x => x.SyncStatus).HasMaxLength(20);
+            e.Property(x => x.Reason).HasMaxLength(200);
+            // Satu laporan terkini per key+namespace (upsert); index unik juga penjaga saat dua laporan berbarengan.
+            e.HasIndex(x => new { x.TenantId, x.ApiKeyId, x.Namespace }).IsUnique();
+            e.HasIndex(x => new { x.TenantId, x.Namespace });
+        });
+
+        b.Entity<SearchProviderConfig>(e =>
+        {
+            e.ToTable("search_provider_configs", t =>
+            {
+                t.HasCheckConstraint("ck_search_provider_configs_weight", "[weight] >= 1");
+                t.HasCheckConstraint("ck_search_provider_configs_type", "LEN([type]) BETWEEN 1 AND 50");
+                t.HasCheckConstraint("ck_search_provider_configs_reset_policy", In("reset_policy", ResetPolicies.All));
+                t.HasCheckConstraint("ck_search_provider_configs_costs", "[cost_per_search] >= 0 AND [cost_per_extract] >= 0 AND ([monthly_budget] IS NULL OR [monthly_budget] >= 0)");
+            });
+            e.Property(x => x.Name).HasMaxLength(100);
+            e.Property(x => x.Type).HasMaxLength(50);
+            e.Property(x => x.BaseUri).HasMaxLength(500);
+            e.Property(x => x.ApiKeyEncrypted).HasMaxLength(2000);
+            e.Property(x => x.KeyHint).HasMaxLength(32);
+            e.Property(x => x.Capabilities).HasMaxLength(100);
+            e.Property(x => x.MonthlyBudget).HasPrecision(18, 4);
+            e.Property(x => x.CostPerSearch).HasPrecision(18, 4);
+            e.Property(x => x.CostPerExtract).HasPrecision(18, 4);
+            e.Property(x => x.ResetPolicy).HasMaxLength(50);
+            e.Property(x => x.CreatedAt).HasConversion(utcDates);
+            e.Property(x => x.UpdatedAt).HasConversion(utcDates);
+            e.HasIndex(x => x.PublicId).IsUnique();
+            e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique().HasFilter("[deleted_at] IS NULL");
+        });
+
+        b.Entity<SearchProviderState>(e =>
+        {
+            e.ToTable("search_provider_states", t =>
+            {
+                t.HasCheckConstraint("ck_search_provider_states_status", In("status", SearchProviderStatuses.All));
+            });
+            e.Property(x => x.Status).HasMaxLength(50);
+            e.Property(x => x.UsedThisPeriod).HasPrecision(18, 4);
+            e.Property(x => x.LastError).HasMaxLength(1000);
+            e.Property(x => x.Generation).HasDefaultValue(0L);
+            e.Property(x => x.AdminGeneration).HasDefaultValue(0L);
+            e.Property(x => x.PeriodStart).HasConversion(utcDates);
+            e.Property(x => x.CreatedAt).HasConversion(utcDates);
+            e.Property(x => x.UpdatedAt).HasConversion(utcDates);
+            e.Property(x => x.LastSuccessAt).HasConversion(utcDates);
+            e.Property(x => x.UnavailableUntil).HasConversion(utcDates);
+            e.Property(x => x.ProbeLeaseUntil).HasConversion(utcDates);
+            e.HasIndex(x => x.ProviderId).IsUnique();
+            e.HasOne<SearchProviderConfig>().WithMany().HasForeignKey(x => x.ProviderId);
+        });
+
         b.Entity<UsageLog>(e =>
         {
             e.ToTable("usage_logs", t => t.HasCheckConstraint("ck_usage_logs_status",
@@ -292,8 +373,12 @@ public class GatewayDbContext(DbContextOptions<GatewayDbContext> options, Tenant
         TenantOwned<Project>(b, softDelete: true);
         TenantOwned<ApiKey>(b);
         TenantOwned<Policy>(b);
+        TenantOwned<AppSetting>(b);
+        TenantOwned<AppStatusReport>(b);
         TenantOwned<UsageLog>(b, foreignKey: false);
         TenantOwned<UsageDaily>(b, foreignKey: false);
+        TenantOwned<SearchProviderConfig>(b, softDelete: true);
+        TenantOwned<SearchProviderState>(b);
 
         MaintenanceModel.ConfigureMaintenance(b, this);
         ApplyConventions(b);

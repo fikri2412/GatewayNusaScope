@@ -1,30 +1,21 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import { api, errorMessage } from '../api'
 import { canConfigure, useAuth } from '../auth'
 import type { AlertEventDto, AlertRuleDto, ApiKeyDto, DeliveryDto, ProjectDto, WebhookDto } from '../types'
 import { ALERT_METRICS, ALERT_SCOPES } from '../types'
-import {
-  Alert,
-  DataTable,
-  EmptyRow,
-  Field,
-  fmtDateTime,
-  Loading,
-  Modal,
-  PageHeader,
-  useLoad,
-} from '../ui'
+import { Alert, DataTable, EmptyRow, Field, Loading, Modal, PageHeader } from '../ui'
+import { fmtDateTime, useLoad } from '../ui-helpers'
 
 /* --------------------------------- Alerts --------------------------------- */
 
 export function AlertsPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const alerts = useLoad(() => api.get<AlertRuleDto[]>('/admin/api/alerts'), [])
-  const events = useLoad(() => api.get<AlertEventDto[]>('/admin/api/alerts/events', { limit: 50 }), [])
-  const webhooks = useLoad(() => api.get<WebhookDto[]>('/admin/api/webhooks'), [])
-  const projects = useLoad(() => api.get<ProjectDto[]>('/admin/api/projects'), [])
-  const keys = useLoad(() => api.get<ApiKeyDto[]>('/admin/api/keys'), [])
+  const alerts = useLoad(useCallback(() => api.get<AlertRuleDto[]>('/admin/api/alerts'), []))
+  const events = useLoad(useCallback(() => api.get<AlertEventDto[]>('/admin/api/alerts/events', { limit: 50 }), []))
+  const webhooks = useLoad(useCallback(() => api.get<WebhookDto[]>('/admin/api/webhooks'), []))
+  const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
+  const keys = useLoad(useCallback(() => api.get<ApiKeyDto[]>('/admin/api/keys'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<AlertRuleDto | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -64,9 +55,12 @@ export function AlertsPage() {
       />
       {error ? <Alert>{error}</Alert> : null}
       {alerts.error ? <Alert>{alerts.error}</Alert> : null}
+      {webhooks.error ? <Alert>{webhooks.error}</Alert> : null}
+      {projects.error ? <Alert>{projects.error}</Alert> : null}
+      {keys.error ? <Alert>{keys.error}</Alert> : null}
       {alerts.loading ? (
         <Loading />
-      ) : (
+      ) : alerts.error ? null : (
         <DataTable head={['Nama', 'Metrik', 'Scope', 'Ambang', 'Webhook', 'Terakhir dipicu', 'Status', 'Aksi']}>
           {alerts.data && alerts.data.length > 0 ? (
             alerts.data.map((rule) => (
@@ -107,7 +101,7 @@ export function AlertsPage() {
         {events.error ? <Alert>{events.error}</Alert> : null}
         {events.loading ? (
           <Loading />
-        ) : (
+        ) : events.error ? null : (
           <DataTable head={['Waktu', 'Rule', 'Metrik', 'Scope', 'Ambang', 'Periode', 'Terpakai', 'Batas']}>
             {events.data && events.data.length > 0 ? (
               events.data.map((event, index) => (
@@ -204,7 +198,7 @@ function AlertRuleModal({
       scopeId: scope === 'tenant' ? null : scopeId,
       thresholdPercent: threshold,
       webhookId: clearWebhook || !webhookId ? null : webhookId,
-      clearWebhook,
+      clearWebhook: clearWebhook || (rule?.webhookId != null && webhookId === ''),
       enabled,
     }
     try {
@@ -312,7 +306,7 @@ function AlertRuleModal({
 export function WebhooksPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const webhooks = useLoad(() => api.get<WebhookDto[]>('/admin/api/webhooks'), [])
+  const webhooks = useLoad(useCallback(() => api.get<WebhookDto[]>('/admin/api/webhooks'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<WebhookDto | null>(null)
   const [deliveriesFor, setDeliveriesFor] = useState<WebhookDto | null>(null)
@@ -346,7 +340,7 @@ export function WebhooksPage() {
       {webhooks.error ? <Alert>{webhooks.error}</Alert> : null}
       {webhooks.loading ? (
         <Loading />
-      ) : (
+      ) : webhooks.error ? null : (
         <DataTable head={['Nama', 'URL', 'Secret', 'Status', 'Diubah', 'Aksi']}>
           {webhooks.data && webhooks.data.length > 0 ? (
             webhooks.data.map((hook) => (
@@ -452,6 +446,8 @@ function WebhookModal({ hook, onClose, onSaved }: { hook?: WebhookDto; onClose: 
             type="password"
             autoComplete="off"
             required={!hook}
+            minLength={16}
+            maxLength={200}
             value={signingSecret}
             onChange={(event) => setSigningSecret(event.target.value)}
           />
@@ -473,14 +469,14 @@ function WebhookModal({ hook, onClose, onSaved }: { hook?: WebhookDto; onClose: 
 }
 
 function DeliveriesModal({ hook, onClose }: { hook: WebhookDto; onClose: () => void }) {
-  const deliveries = useLoad(() => api.get<DeliveryDto[]>(`/admin/api/webhooks/${hook.id}/deliveries`, { limit: 50 }), [hook.id])
+  const deliveries = useLoad(useCallback(() => api.get<DeliveryDto[]>(`/admin/api/webhooks/${hook.id}/deliveries`, { limit: 50 }), [hook.id]))
 
   return (
     <Modal title={`Pengiriman — ${hook.name}`} onClose={onClose} wide>
       {deliveries.error ? <Alert>{deliveries.error}</Alert> : null}
       {deliveries.loading ? (
         <Loading />
-      ) : (
+      ) : deliveries.error ? null : (
         <DataTable head={['Dibuat', 'Status', 'Attempt', 'Kode', 'Kirim berikutnya', 'Selesai', 'Error']}>
           {deliveries.data && deliveries.data.length > 0 ? (
             deliveries.data.map((delivery) => (

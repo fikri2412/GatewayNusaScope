@@ -1,0 +1,435 @@
+/* =========================================================
+   Composer & pemilihan model — gaya NusaScope (02-home / 03-chat / 04-canvas).
+   Kelas ns-* hanya dipakai Composer.tsx dan ModelSelect.tsx. Token --ns-* dari
+   tokens.css dipakai dengan nilai cadangan, jadi tampilan tetap utuh bila token belum dimuat.
+   ========================================================= */
+
+/* ---------- Kerangka ---------- */
+.ns-composer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 12px;
+  font-family: var(--ns-font-sans, inherit);
+  color: var(--ns-text, inherit);
+}
+
+.ns-composer.ns-home {
+  align-items: center;
+  gap: 28px;
+  width: 100%;
+  max-width: var(--ns-content-max, 760px);
+  margin: 0 auto;
+  padding: 0;
+}
+
+.ns-home-head { display: flex; flex-direction: column; gap: 8px; text-align: center; }
+.ns-home-title {
+  margin: 0;
+  font-size: clamp(26px, 4vw, 40px);
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1.12;
+  color: var(--ns-text, #1a1a1d);
+}
+.ns-home-sub { margin: 0; font-size: var(--ns-text-md, 15px); color: var(--ns-text-muted, #6b6a70); }
+
+/* ---------- Kartu composer ---------- */
+.ns-card {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 14px 12px 18px;
+  background: var(--ns-surface, #ffffff);
+  border: 1px solid var(--ns-border, #e4e2dc);
+  border-radius: var(--ns-radius-3xl, 20px);
+  box-shadow: var(--ns-shadow-composer, 0 1px 2px rgba(26, 26, 29, 0.04), 0 8px 24px rgba(26, 26, 29, 0.05));
+  transition: border-color 0.15s;
+}
+/* Konsep: ada lampiran → border aksen menandai composer sedang membawa berkas. */
+.ns-card-files { border: 1.5px solid var(--ns-accent, #0f5f57); }
+.ns-card-drop { border-color: var(--ns-accent, #0f5f57); }
+.ns-card.ns-card-chat { padding: 8px 10px !important; border-radius: 18px !important; }
+
+/* ---------- Bilah Chat Percakapan ---------- */
+.ns-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ns-chat-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-width: 0;
+}
+.ns-chat-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .ns-chat-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .ns-chat-input-wrap {
+    order: 1;
+    width: 100%;
+  }
+  .ns-chat-tools {
+    order: 2;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+}
+
+/* Overlay seret: pointer-events none supaya drop tetap diterima kartu di bawahnya. */
+.ns-drop {
+  position: absolute;
+  inset: 6px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  border: 2px dashed var(--ns-accent, #0f5f57);
+  border-radius: var(--ns-radius-2xl, 16px);
+  background: rgba(234, 243, 241, 0.94);
+  color: var(--ns-accent, #0f5f57);
+  text-align: center;
+  pointer-events: none;
+}
+.ns-drop-title { font-size: var(--ns-text-md, 15px); font-weight: 600; }
+.ns-drop-sub { font-size: var(--ns-text-sm, 12px); color: var(--ns-text-2, #3d3c42); overflow-wrap: anywhere; }
+
+/* ---------- Input ---------- */
+.ns-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ns-text-lg, 16px);
+  line-height: 1.5;
+  field-sizing: content;
+}
+.ns-input:focus,
+.ns-input:focus-visible {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.ns-input::placeholder { color: var(--ns-text-muted, #6b6a70); }
+.ns-chat-input:focus, .ns-chat-input:focus-visible { outline: none !important; border: none !important; box-shadow: none !important; }
+.ns-popover button.row:hover { background: #f2f1ed !important; }
+
+/* ---------- Baris kontrol ---------- */
+.ns-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.ns-grow { flex: 1 1 auto; }
+
+.ns-icon-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ns-radius-md, 10px);
+  background: transparent;
+  color: var(--ns-text-3, #55545a);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ns-icon-btn:hover:not(:disabled) { background: var(--ns-surface-2, #f2f1ed); color: var(--ns-text, #1a1a1d); }
+.ns-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ns-send {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ns-radius-lg, 12px);
+  background: var(--ns-primary, #1a1a1d);
+  color: var(--ns-text-on-dark, #f7f6f3);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ns-send:hover:not(:disabled) { background: var(--ns-primary-hover, #2c2c31); }
+.ns-send:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ns-busy {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ns-accent-soft, #bfdcd5);
+  border-top-color: var(--ns-accent, #0f5f57);
+  border-radius: 50%;
+  animation: ns-busy-spin 0.8s linear infinite;
+}
+@keyframes ns-busy-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Pemilih model (chip + select native) ---------- */
+.ns-models-picker { display: contents; }
+.ns-models-picker .ns-notes { order: 2; flex-basis: 100%; }
+.ns-models-picker > .ns-link { order: 3; }
+.ns-mchip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--ns-radius-md, 10px);
+  background: var(--ns-surface-2, #f2f1ed);
+  color: var(--ns-text, #1a1a1d);
+}
+.ns-mchip:focus-within { box-shadow: var(--ns-ring-focus, 0 0 0 4px var(--ns-accent-tint, #eaf3f1)); }
+.ns-mselect {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: min(42vw, 260px);
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ns-text-base, 14px);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ns-models-cards { display: flex; flex-direction: column; align-items: center; gap: 0; width: 100%; }
+.ns-mcards {
+  width: 100%;
+  max-width: 760px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  overflow: visible;
+  padding: 0;
+}
+.ns-mcard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1.5px solid var(--ns-border, #e4e2dc);
+  border-radius: 16px;
+  background: var(--ns-surface, #ffffff);
+  color: #1a1a1d;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.ns-mcard:hover { transform: translateY(-2px); }
+.ns-mcard:hover .spin { transform: rotate(45deg); }
+.spin { display: inline-flex; transition: transform 0.4s ease; }
+.ns-mcard-top { display: flex; align-items: center; justify-content: space-between; }
+.ns-mcard-body { display: flex; flex-direction: column; gap: 3px; }
+.ns-mcard-name { font-size: 16px; font-weight: 600; }
+.ns-mcard-tag { font-size: 13px; color: #55545a; line-height: 1.45; }
+.ns-mcard-ver { font-family: var(--ns-font-mono, monospace); font-size: 12px; color: #55545a; }
+
+.ns-think-toggle {
+  display: flex;
+  gap: 2px;
+  background: #f2f1ed;
+  border-radius: 10px;
+  padding: 3px;
+  margin-left: 4px;
+}
+.ns-think-tab {
+  height: 32px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b6a70;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ns-think-tab.active {
+  background: #ffffff;
+  color: #1a1a1d;
+  box-shadow: 0 1px 2px rgba(26, 26, 29, 0.08);
+}
+.ns-model-name-label {
+  font-size: 13px;
+  color: #6b6a70;
+}
+
+/* Warna kartu per keluarga alias; alias asing tetap tampil netral, bukan disembunyikan. */
+.ns-mcard[data-family='deepseek'] { --ns-model-ink: var(--ns-model-deepseek, #0f5f57); --ns-model-tint: var(--ns-model-deepseek-tint, #eaf3f1); }
+.ns-mcard[data-family='glm'] { --ns-model-ink: var(--ns-model-glm, #3d3f8f); --ns-model-tint: var(--ns-model-glm-tint, #eeeef8); }
+.ns-mcard[data-family='minimax'] { --ns-model-ink: var(--ns-model-minimax, #b45f2e); --ns-model-tint: var(--ns-model-minimax-tint, #fbf1ea); }
+.ns-mcard[data-family='auto'] { --ns-model-ink: var(--ns-accent, #0f5f57); --ns-model-tint: var(--ns-accent-tint, #eaf3f1); }
+.ns-mcard[aria-pressed='true'] { background: var(--ns-model-tint, #eaf3f1); border-color: var(--ns-model-ink, #0f5f57); }
+
+/* ---------- Chip saran ---------- */
+.ns-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: 100%; }
+.ns-chip {
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--ns-border, #e4e2dc);
+  border-radius: var(--ns-radius-pill, 999px);
+  background: transparent;
+  color: var(--ns-text, #1a1a1d);
+  font: inherit;
+  font-size: var(--ns-text-base, 14px);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ns-chip:hover { background: var(--ns-muted, #edebe6); }
+
+/* ---------- Aksi gambar cepat ---------- */
+.ns-image-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 0 6px; }
+.ns-image-actions-label { font-size: 12px; color: var(--ns-text-muted, #6b6a70); font-weight: 500; }
+.ns-image-chip { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--ns-border, #e4e2dc); background: var(--ns-surface, #ffffff); font-family: inherit; font-size: 12px; color: var(--ns-text, #1a1a1d); cursor: pointer; transition: background .15s ease; }
+.ns-image-chip:hover:not(:disabled) { background: var(--ns-muted, #edebe6); }
+.ns-image-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Lampiran ---------- */
+.ns-attachments { list-style: none; margin: 0; padding: 2px 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.ns-attach { width: 64px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ns-attach-tile {
+  position: relative;
+  flex: none;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--ns-border, #e4e2dc);
+  border-radius: var(--ns-radius-md, 10px);
+  background: var(--ns-surface-2, #f2f1ed);
+}
+.ns-attachments .ns-attach-img,
+.ns-attachments .ns-attach-img .attachment-image { display: block; width: 100%; height: 100%; }
+.ns-attachments .ns-attach-img .attachment-thumb { display: block; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: zoom-in; }
+.ns-attachments .ns-attach-img .attachment-thumb img { display: block; width: 100%; height: 100%; border-radius: 0; object-fit: cover; }
+.ns-attachments .ns-attach-img .muted,
+.ns-attachments .ns-attach-img .error { margin: 0; padding: 4px; font-size: 10px; text-align: center; }
+.ns-attach-doc { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--ns-text-muted, #6b6a70); }
+.ns-attach-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(26, 26, 29, 0.75);
+  color: #ffffff;
+  cursor: pointer;
+}
+.ns-attach-x:hover { background: rgba(26, 26, 29, 0.9); }
+.ns-attach-name {
+  font-size: var(--ns-text-xs, 11px);
+  color: var(--ns-text-muted, #6b6a70);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Catatan, badge, tautan ---------- */
+/* Margin .error/.muted bawaan halaman tidak dipakai di dalam composer yang rapat. */
+.ns-composer .error,
+.ns-composer .muted,
+.ns-models .error,
+.ns-models .muted { margin: 0; }
+.ns-composer .error,
+.ns-models .error { color: var(--ns-danger, #b42318); }
+.ns-composer .muted,
+.ns-models .muted { color: var(--ns-text-muted, #6b6a70); }
+
+.ns-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ns-note { margin: 0; font-size: var(--ns-text-base-sm, 13px); line-height: 1.45; color: var(--ns-text-muted, #6b6a70); }
+.ns-composer.ns-home > .ns-note { text-align: center; }
+.ns-upload { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ns-upload progress { flex: none; width: 120px; height: 6px; accent-color: var(--ns-accent, #0f766e); }
+.ns-upload-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-composer.ns-home > .ns-upload { justify-content: center; }
+.capture-dialog { width: min(92vw, 560px); padding: 20px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-2xl); background: var(--ns-surface); color: var(--ns-text); box-shadow: var(--ns-shadow-modal); }
+.capture-dialog::backdrop { background: rgb(26 26 29 / .6); }
+.capture-video { display: block; width: 100%; max-height: 60dvh; margin: 0 0 12px; border-radius: var(--ns-radius-md); background: #000; object-fit: contain; }
+
+.ns-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--ns-border, #e4e2dc);
+  border-radius: var(--ns-radius-pill, 999px);
+  font-size: var(--ns-text-sm, 12px);
+  color: var(--ns-text-muted, #6b6a70);
+}
+.ns-badge-yes { color: var(--ns-accent, #0f5f57); border-color: var(--ns-accent-soft, #bfdcd5); background: var(--ns-accent-tint, #eaf3f1); }
+.ns-badge-no,
+.ns-badge-unknown { color: var(--ns-text-3, #55545a); background: var(--ns-surface-2, #f2f1ed); }
+
+.ns-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--ns-text-base-sm, 13px);
+  color: var(--ns-accent, #0f5f57);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ns-link:hover { color: var(--ns-accent-hover, #0a443e); }
+
+.ns-composer :focus-visible { outline: 2px solid var(--ns-accent, #0f5f57); outline-offset: 2px; }
+
+@media (max-width: 720px) {
+  .ns-mcards { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ns-card,
+  .ns-icon-btn,
+  .ns-send,
+  .ns-chip,
+  .ns-mcard,
+  .ns-mcard-glyph { transition: none; }
+  .ns-mcard:hover:not(:disabled),
+  .ns-mcard:hover:not(:disabled) .ns-mcard-glyph { transform: none; }
+  .ns-busy { animation-duration: 1.8s; }
+}

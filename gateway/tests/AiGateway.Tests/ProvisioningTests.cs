@@ -25,7 +25,7 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
     private static async Task<GatewayException> CodeOf(Func<Task> action) => await Assert.ThrowsAsync<GatewayException>(action);
 
     [Fact]
-    public async Task Importing_catalog_models_creates_routes_and_tiered_prices_and_skips_unsupported_ones()
+    public async Task Importing_catalog_models_creates_routes_and_tiered_prices_and_skips_families_the_gateway_cannot_forward()
     {
         long templateId;
         await using (var ctx = Db.NewContext())
@@ -36,9 +36,12 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
                 {
                     TemplateId = templateId, UpstreamModel = "priced-model", DisplayName = "Priced",
                     InputPricePer1M = 2m, OutputPricePer1M = 4m, CacheReadPricePer1M = 0.2m, MaxOutputTokens = 8000,
+                    SupportsTools = true,
                     ExtraTiersJson = JsonSerializer.Serialize(new[] { new PriceTier(200_001, 4m, 6m, 0.4m, null) }),
                 },
+                new CatalogModel { TemplateId = templateId, UpstreamModel = "plain-model", DisplayName = "Plain" },
                 new CatalogModel { TemplateId = templateId, UpstreamModel = "claude-like", DisplayName = "Claude", ApiFamily = ApiFamilies.AnthropicMessages },
+                new CatalogModel { TemplateId = templateId, UpstreamModel = "gemini-like", DisplayName = "Gemini", ApiFamily = ApiFamilies.GoogleGenerate },
                 new CatalogModel { TemplateId = templateId, UpstreamModel = "switched-off", DisplayName = "Off", Enabled = false });
             await ctx.SaveChangesAsync();
         }
@@ -52,7 +55,8 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
             var specs = await prov.CatalogSpecsAsync(provider.Id, null, default);
             var offered = specs.Select(x => x.Alias).ToArray();
             Assert.Contains("priced-model", offered);
-            Assert.DoesNotContain("claude-like", offered); // keluarga API belum didukung gateway
+            Assert.Contains("claude-like", offered); // anthropic_messages diterjemahkan gateway
+            Assert.DoesNotContain("gemini-like", offered); // keluarga API belum didukung gateway
             Assert.DoesNotContain("switched-off", offered);
 
             var created = await prov.ImportModelsAsync(provider.Id, specs, default);
@@ -66,6 +70,10 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
             Assert.Equal([0, 200_001], prices.Select(p => p.MinInputTokens).OrderBy(x => x).ToArray());
             Assert.Equal(2m, Pricing.Pick(prices, DateTime.UtcNow.AddMinutes(1), 1_000)!.InputPricePer1M);
             Assert.Equal(4m, Pricing.Pick(prices, DateTime.UtcNow.AddMinutes(1), 300_000)!.InputPricePer1M);
+            // Tools diimpor dari katalog untuk satu route ini; streaming tidak diklaim sampai dikonfirmasi admin.
+            Assert.Equal((true, null), (priced.SupportsTools, priced.SupportsStreaming));
+            var plain = await db.Models.SingleAsync(m => m.Alias == "plain-model");
+            Assert.Equal((false, null), (plain.SupportsTools, plain.SupportsStreaming));
             return 0;
         });
     }
@@ -148,6 +156,7 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
                       "cost":[{"input":3,"output":15,"cache":{"read":0.3,"write":3.75}},
                               {"tier":{"type":"context","size":200000},"input":6,"output":22.5,"cache":{"read":0.6,"write":7.5}}],
                       "limit":{"context":1000000,"output":64000}},
+          "m-gemini":{"name":"Gemini","package":"aisdk:@ai-sdk/google","cost":[{"input":1,"output":2}]},
           "m-unknown":{"name":"Unknown family","package":"aisdk:@something/else","cost":[{"input":1,"output":1}]}}}}}
         """;
 
@@ -156,7 +165,7 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
     {
         var provider = Assert.Single(OpenCodeCatalogSync.Parse(System.Text.Json.Nodes.JsonNode.Parse(ConfigFixture)!));
         Assert.Equal(("fakeprov", "https://fake.test/v1"), (provider.Key, provider.BaseUrl));
-        Assert.Equal(["m-chat", "m-off", "m-claude"], provider.Models.Select(m => m.Id).ToArray());
+        Assert.Equal(["m-chat", "m-off", "m-claude", "m-gemini"], provider.Models.Select(m => m.Id).ToArray());
 
         var chat = provider.Models[0];
         Assert.Equal((ApiFamilies.OpenAiChat, false, true, true), (chat.ApiFamily, chat.Disabled, chat.Tools, chat.Vision));
@@ -180,7 +189,7 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
         var first = await sync.SyncAsync("oc_sk_sync_key", url, default);
 
         Assert.Equal("Bearer oc_sk_sync_key", Upstream.Requests.Single().Headers["authorization"]);
-        Assert.Equal((1, 3, 0, 0, 1), (first.TemplatesAdded, first.ModelsAdded, first.ModelsUpdated, first.ModelsSkippedManual, first.ModelsUnsupported));
+        Assert.Equal((1, 4, 0, 0, 1), (first.TemplatesAdded, first.ModelsAdded, first.ModelsUpdated, first.ModelsSkippedManual, first.ModelsUnsupported));
 
         await using var ctx = Db.NewContext();
         var template = await ctx.ProviderTemplates.SingleAsync(t => t.Code == "fakeprov");
@@ -195,7 +204,7 @@ public class ProvisioningTests(TestDb db) : GatewayTestBase(db)
 
         await using var scope2 = Factory.Services.CreateAsyncScope(); // satu scope per sinkronisasi, seperti satu request
         var second = await scope2.ServiceProvider.GetRequiredService<OpenCodeCatalogSync>().SyncAsync("oc_sk_sync_key", url, default);
-        Assert.Equal((0, 0, 2, 1, 1), (second.TemplatesAdded, second.ModelsAdded, second.ModelsUpdated, second.ModelsSkippedManual, second.ModelsUnsupported));
+        Assert.Equal((0, 0, 3, 1, 1), (second.TemplatesAdded, second.ModelsAdded, second.ModelsUpdated, second.ModelsSkippedManual, second.ModelsUnsupported));
 
         await using var check = Db.NewContext();
         Assert.Equal(99m, (await check.CatalogModels.SingleAsync(m => m.Id == manual.Id)).InputPricePer1M);

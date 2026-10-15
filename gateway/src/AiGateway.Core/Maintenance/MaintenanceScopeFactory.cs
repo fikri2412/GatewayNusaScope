@@ -15,6 +15,7 @@ namespace AiGateway.Core.Maintenance;
 /// (<c>IS_MEMBER(N'gateway_platform')</c>), bukan <c>IgnoreQueryFilters()</c> atau flag sesi.
 /// Tanpa connection string itu job memakai scope aplikasi biasa (dev/test, atau RLS belum dipasang) dan
 /// sebuah peringatan dicatat saat start, karena pada environment ber-RLS job tersebut menjadi no-op.
+/// Connection string yang sama dipakai <see cref="PlatformDb"/> untuk request HTTP plane platform.
 /// </summary>
 public sealed class MaintenanceScopeFactory : IDisposable
 {
@@ -29,7 +30,8 @@ public sealed class MaintenanceScopeFactory : IDisposable
             // aplikasi dan tidak melakukan apa pun (diam-diam) begitu RLS SQL Server dipasang.
             root.GetRequiredService<ILoggerFactory>().CreateLogger<MaintenanceScopeFactory>().LogWarning(
                 "ConnectionStrings:GatewayPlatform tidak diisi; retensi dan pengiriman webhook memakai koneksi aplikasi " +
-                "dan akan no-op tanpa peringatan bila RLS SQL Server aktif.");
+                "dan akan no-op tanpa peringatan, laporan lintas tenant platform kosong, dan audit tanpa tenant ditolak " +
+                "(dilog sebagai Error) bila RLS SQL Server aktif.");
             _scopes = root.GetRequiredService<IServiceScopeFactory>();
             return;
         }

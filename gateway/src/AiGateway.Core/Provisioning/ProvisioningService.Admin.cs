@@ -10,7 +10,10 @@ public sealed record ProviderPatch(
     string? Name = null, string? BaseUrl = null, bool? Enabled = null, string? AuthHeader = null, string? AuthPrefix = null,
     string? ModelsPath = null, bool ClearModelsPath = false);
 
-public sealed record ModelPatch(string? Description = null, bool? Enabled = null, int? MaxOutputTokens = null, bool ClearMaxOutputTokens = false);
+public sealed record ModelPatch(
+    string? Description = null, bool? Enabled = null, int? MaxOutputTokens = null, bool ClearMaxOutputTokens = false,
+    bool? SupportsTools = null, bool ClearSupportsTools = false, bool? SupportsStreaming = null, bool ClearSupportsStreaming = false,
+    bool? SupportsVision = null, bool ClearSupportsVision = false);
 
 public sealed record ProjectPatch(
     string? Name = null, string? Status = null, bool? LogContent = null, int? ContentRetentionDays = null, bool ClearRetention = false);
@@ -32,7 +35,22 @@ public sealed partial class ProvisioningService
     {
         var p = await db.Providers.FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw GatewayException.NotFound("Provider");
         if (patch.Name is not null) p.Name = RequireName(patch.Name, 100, "name");
-        if (patch.BaseUrl is not null) { ValidateBaseUrl(patch.BaseUrl); p.BaseUrl = patch.BaseUrl; }
+        if (patch.BaseUrl is not null)
+        {
+            ValidateBaseUrl(patch.BaseUrl);
+            if (patch.BaseUrl != p.BaseUrl)
+            {
+                p.BaseUrl = patch.BaseUrl;
+                // Base URL adalah target upstream efektif semua route ke provider ini: konfirmasi capabilities
+                // model yang memakainya tidak lagi berlaku. Nama, header auth, dan rotasi key tidak mengubah target.
+                foreach (var model in await RoutedModelsAsync(p.Id, ct))
+                {
+                    model.SupportsTools = null;
+                    model.SupportsStreaming = null;
+                    model.SupportsVision = null;
+                }
+            }
+        }
         if (patch.AuthHeader is not null || patch.AuthPrefix is not null)
         {
             var header = patch.AuthHeader ?? p.AuthHeader;
@@ -49,6 +67,13 @@ public sealed partial class ProvisioningService
         if (patch.Enabled is not null) p.Enabled = patch.Enabled.Value;
         await SaveConcurrentAsync("Nama provider sudah dipakai.", ct);
         return p;
+    }
+
+    /// <summary>Model yang punya route ke provider ini (termasuk route nonaktif): satu perubahan target upstream menyentuh semuanya.</summary>
+    private async Task<List<Model>> RoutedModelsAsync(long providerId, CancellationToken ct)
+    {
+        var modelIds = await db.ModelRoutes.Where(r => r.ProviderId == providerId).Select(r => r.ModelId).Distinct().ToListAsync(ct);
+        return await db.Models.Where(m => modelIds.Contains(m.Id)).ToListAsync(ct);
     }
 
     /// <summary>Hapus lunak. Ditolak bila masih dipakai route model yang aktif.</summary>
@@ -78,24 +103,49 @@ public sealed partial class ProvisioningService
         if (patch.ClearMaxOutputTokens) m.MaxOutputTokens = null;
         else if (patch.MaxOutputTokens is { } max)
             m.MaxOutputTokens = max > 0 ? max : throw GatewayException.BadRequest("invalid_max_output", "max_output_tokens harus > 0.");
+        // Konfirmasi capabilities: clear menang atas nilai; NULL pada patch berarti tanpa perubahan.
+        if (patch.ClearSupportsTools) m.SupportsTools = null;
+        else if (patch.SupportsTools is { } tools) m.SupportsTools = tools;
+        if (patch.ClearSupportsStreaming) m.SupportsStreaming = null;
+        else if (patch.SupportsStreaming is { } streaming) m.SupportsStreaming = streaming;
+        if (patch.ClearSupportsVision) m.SupportsVision = null;
+        else if (patch.SupportsVision is { } vision) m.SupportsVision = vision;
         if (patch.Enabled is not null) m.Enabled = patch.Enabled.Value;
         await SaveConcurrentAsync("Konflik saat menyimpan model.", ct);
         return m;
     }
 
-    /// <summary>Ganti seluruh route model (urutan percobaan/fallback) secara atomik.</summary>
+    /// <summary>
+    /// Ganti seluruh route model (urutan percobaan/fallback) secara atomik. Konfirmasi capabilities melekat pada
+    /// target yang dikonfigurasi: bila set target (provider + upstream model) berubah, SupportsTools,
+    /// SupportsStreaming, dan SupportsVision dikosongkan di transaksi yang sama supaya admin mengonfirmasi ulang.
+    /// </summary>
     public async Task ReplaceRoutesAsync(long modelId, IReadOnlyCollection<RouteSpec> routes, CancellationToken ct)
     {
-        if (!await db.Models.AnyAsync(m => m.Id == modelId, ct)) throw GatewayException.NotFound("Model");
+        var model = await db.Models.FirstOrDefaultAsync(m => m.Id == modelId, ct) ?? throw GatewayException.NotFound("Model");
         await ValidateRoutesAsync(routes, ct);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        db.ModelRoutes.RemoveRange(await db.ModelRoutes.Where(r => r.ModelId == modelId).ToListAsync(ct));
+        var existing = await db.ModelRoutes.Where(r => r.ModelId == modelId).ToListAsync(ct);
+        if (!Targets(existing).SetEquals(Targets(routes)))
+        {
+            model.SupportsTools = null;
+            model.SupportsStreaming = null;
+            model.SupportsVision = null;
+        }
+        db.ModelRoutes.RemoveRange(existing);
         foreach (var r in routes)
             db.ModelRoutes.Add(new ModelRoute { ModelId = modelId, ProviderId = r.ProviderId, UpstreamModel = r.UpstreamModel, Priority = r.Priority, Weight = r.Weight });
-        await db.SaveChangesAsync(ct);
+        await SaveConcurrentAsync("Konflik saat menyimpan route model.", ct);
         await tx.CommitAsync(ct);
     }
+
+    /// <summary>Set target yang dikonfigurasi, tanpa urutan/prioritas/weight: yang menentukan kompatibilitas model.</summary>
+    private static HashSet<(long ProviderId, string UpstreamModel)> Targets(IEnumerable<RouteSpec> routes) =>
+        routes.Select(r => (r.ProviderId, r.UpstreamModel)).ToHashSet();
+
+    private static HashSet<(long ProviderId, string UpstreamModel)> Targets(IEnumerable<ModelRoute> routes) =>
+        routes.Select(r => (r.ProviderId, r.UpstreamModel)).ToHashSet();
 
     public async Task AddPriceSetAsync(long modelId, PriceSet price, CancellationToken ct)
     {

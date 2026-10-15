@@ -1,37 +1,19 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import { api, errorMessage } from '../api'
 import type { CatalogModelDto, InviteResponse, Page, PlanDto, PlatformAuditItem, SyncResult, TemplateDto, TenantDto, TenantWithInvite, UsageRow } from '../types'
 import { TENANT_STATUSES } from '../types'
-import {
-  Alert,
-  DataTable,
-  EmptyRow,
-  Field,
-  fmtDate,
-  fmtDateTime,
-  fmtMoney,
-  fmtNumber,
-  isoOrNull,
-  Loading,
-  Modal,
-  PageHeader,
-  Pager,
-  SecretPanel,
-  Toolbar,
-  daysAgo,
-  endOfTodayIso,
-  today,
-  useLoad,
-} from '../ui'
-import { TierRows, tierPayload, toNumber, type TierForm } from './ProviderPages'
+import { Alert, DataTable, EmptyRow, Field, Loading, Modal, PageHeader, Pager, SecretPanel, Toolbar } from '../ui'
+import { daysAgo, endOfTodayIso, fmtDate, fmtDateTime, fmtMoney, fmtNumber, isoOrNull, today, useLoad } from '../ui-helpers'
+import { TierRows } from './ProviderPages'
+import { tierIssue, tierPayload, toNumber, type TierForm } from './provider-form'
 
 const API_FAMILIES = ['openai_chat', 'openai_responses', 'anthropic_messages', 'google_generate']
 
 /* --------------------------------- Tenants -------------------------------- */
 
 export function TenantsPage() {
-  const tenants = useLoad(() => api.get<TenantDto[]>('/platform/api/tenants'), [])
-  const plans = useLoad(() => api.get<PlanDto[]>('/platform/api/plans'), [])
+  const tenants = useLoad(useCallback(() => api.get<TenantDto[]>('/platform/api/tenants'), []))
+  const plans = useLoad(useCallback(() => api.get<PlanDto[]>('/platform/api/plans'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<TenantDto | null>(null)
   const [inviting, setInviting] = useState<TenantDto | null>(null)
@@ -51,9 +33,10 @@ export function TenantsPage() {
       />
       {secret ? <SecretPanel label={secret.label} value={secret.value} onDismiss={() => setSecret(null)} /> : null}
       {tenants.error ? <Alert>{tenants.error}</Alert> : null}
+      {plans.error ? <Alert>{plans.error}</Alert> : null}
       {tenants.loading ? (
         <Loading />
-      ) : (
+      ) : tenants.error ? null : (
         <DataTable head={['Nama', 'Slug', 'Status', 'Plan', 'Tenant ID', 'Dibuat', 'Aksi']}>
           {tenants.data && tenants.data.length > 0 ? (
             tenants.data.map((tenant) => (
@@ -352,7 +335,7 @@ function ResetUserPasswordModal({
 /* ---------------------------------- Plans --------------------------------- */
 
 export function PlansPage() {
-  const plans = useLoad(() => api.get<PlanDto[]>('/platform/api/plans'), [])
+  const plans = useLoad(useCallback(() => api.get<PlanDto[]>('/platform/api/plans'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<PlanDto | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -383,7 +366,7 @@ export function PlansPage() {
       {plans.error ? <Alert>{plans.error}</Alert> : null}
       {plans.loading ? (
         <Loading />
-      ) : (
+      ) : plans.error ? null : (
         <DataTable head={['Nama', 'Max project', 'Max API key', 'Max request/bulan', 'Max token/bulan', 'Aksi']}>
           {plans.data && plans.data.length > 0 ? (
             plans.data.map((plan) => (
@@ -471,16 +454,16 @@ function PlanModal({ plan, onClose, onSaved }: { plan?: PlanDto; onClose: () => 
         </Field>
         <div className="row-grid">
           <Field label="Max project" hint="Kosong = tanpa batas.">
-            <input type="number" min={0} value={maxProjects} onChange={(event) => setMaxProjects(event.target.value)} />
+            <input type="number" min={1} value={maxProjects} onChange={(event) => setMaxProjects(event.target.value)} />
           </Field>
           <Field label="Max API key">
-            <input type="number" min={0} value={maxApiKeys} onChange={(event) => setMaxApiKeys(event.target.value)} />
+            <input type="number" min={1} value={maxApiKeys} onChange={(event) => setMaxApiKeys(event.target.value)} />
           </Field>
           <Field label="Max request/bulan">
-            <input type="number" min={0} value={maxRequestsPerMonth} onChange={(event) => setMaxRequestsPerMonth(event.target.value)} />
+            <input type="number" min={1} value={maxRequestsPerMonth} onChange={(event) => setMaxRequestsPerMonth(event.target.value)} />
           </Field>
           <Field label="Max token/bulan">
-            <input type="number" min={0} value={maxTokensPerMonth} onChange={(event) => setMaxTokensPerMonth(event.target.value)} />
+            <input type="number" min={1} value={maxTokensPerMonth} onChange={(event) => setMaxTokensPerMonth(event.target.value)} />
           </Field>
         </div>
         <div className="form-actions">
@@ -499,21 +482,9 @@ function PlanModal({ plan, onClose, onSaved }: { plan?: PlanDto; onClose: () => 
 /* -------------------------------- Templates ------------------------------- */
 
 export function TemplatesPage() {
-  const templates = useLoad(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), [])
+  const templates = useLoad(useCallback(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), []))
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<TemplateDto | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  async function remove(template: TemplateDto) {
-    if (!window.confirm(`Hapus template "${template.name}"?`)) return
-    setError(null)
-    try {
-      await api.del(`/platform/api/templates/${template.id}`)
-      templates.reload()
-    } catch (err) {
-      setError(errorMessage(err))
-    }
-  }
 
   return (
     <>
@@ -526,11 +497,10 @@ export function TemplatesPage() {
           </button>
         }
       />
-      {error ? <Alert>{error}</Alert> : null}
       {templates.error ? <Alert>{templates.error}</Alert> : null}
       {templates.loading ? (
         <Loading />
-      ) : (
+      ) : templates.error ? null : (
         <DataTable head={['Nama', 'Code', 'Tipe', 'Base URL', 'Auth', 'Models path', 'Sync', 'Status', 'Aksi']}>
           {templates.data && templates.data.length > 0 ? (
             templates.data.map((template) => (
@@ -551,9 +521,6 @@ export function TemplatesPage() {
                 <td className="actions">
                   <button type="button" onClick={() => setEditing(template)}>
                     Edit
-                  </button>
-                  <button type="button" className="danger" onClick={() => void remove(template)}>
-                    Hapus
                   </button>
                 </td>
               </tr>
@@ -644,8 +611,8 @@ function TemplateModal({ template, onClose, onSaved }: { template?: TemplateDto;
             </select>
           </Field>
         </div>
-        <Field label="Base URL default">
-          <input type="url" value={defaultBaseUrl} onChange={(event) => setDefaultBaseUrl(event.target.value)} />
+        <Field label="Base URL default" hint="Wajib https.">
+          <input required type="url" value={defaultBaseUrl} onChange={(event) => setDefaultBaseUrl(event.target.value)} />
         </Field>
         <div className="row-grid">
           <Field label="Auth header">
@@ -702,27 +669,17 @@ function tiersToForm(tiers: unknown): TierForm[] {
 }
 
 export function CatalogPage() {
-  const templates = useLoad(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), [])
+  const templates = useLoad(useCallback(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), []))
   const [templateCode, setTemplateCode] = useState('')
   const effectiveCode = templateCode || templates.data?.[0]?.code || ''
   const models = useLoad(
-    () => (effectiveCode ? api.get<CatalogModelDto[]>('/admin/api/catalog/models', { templateCode: effectiveCode }) : Promise.resolve([])),
-    [effectiveCode],
+    useCallback(
+      () => (effectiveCode ? api.get<CatalogModelDto[]>('/admin/api/catalog/models', { templateCode: effectiveCode }) : Promise.resolve([])),
+      [effectiveCode],
+    ),
   )
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<CatalogModelDto | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  async function remove(model: CatalogModelDto) {
-    if (!window.confirm(`Hapus model katalog "${model.upstreamModel}"?`)) return
-    setError(null)
-    try {
-      await api.del(`/platform/api/catalog/${model.id}`)
-      models.reload()
-    } catch (err) {
-      setError(errorMessage(err))
-    }
-  }
 
   return (
     <>
@@ -735,8 +692,14 @@ export function CatalogPage() {
           </button>
         }
       />
-      <SyncPanel templates={templates.data ?? []} onSynced={() => models.reload()} />
-      {error ? <Alert>{error}</Alert> : null}
+      <SyncPanel
+        templates={templates.data ?? []}
+        onSynced={() => {
+          templates.reload()
+          models.reload()
+        }}
+      />
+      {templates.error ? <Alert>{templates.error}</Alert> : null}
       <Toolbar>
         <Field label="Template">
           <select value={effectiveCode} onChange={(event) => setTemplateCode(event.target.value)}>
@@ -749,9 +712,9 @@ export function CatalogPage() {
         </Field>
       </Toolbar>
       {models.error ? <Alert>{models.error}</Alert> : null}
-      {models.loading ? (
+      {templates.loading || models.loading ? (
         <Loading />
-      ) : (
+      ) : templates.error || models.error ? null : (
         <DataTable head={['Upstream model', 'Nama tampilan', 'Family', 'Context', 'Max in/out', 'Harga in/out per 1M', 'Tier', 'Fitur', 'Sumber', 'Status', 'Aksi']}>
           {models.data && models.data.length > 0 ? (
             models.data.map((model) => (
@@ -779,9 +742,6 @@ export function CatalogPage() {
                 <td className="actions">
                   <button type="button" onClick={() => setEditing(model)}>
                     Edit
-                  </button>
-                  <button type="button" className="danger" onClick={() => void remove(model)}>
-                    Hapus
                   </button>
                 </td>
               </tr>
@@ -910,6 +870,11 @@ function CatalogModelModal({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const tierCheck = tierIssue(tiers)
+    if (tierCheck) {
+      setError(tierCheck)
+      return
+    }
     setBusy(true)
     setError(null)
     const body = {
@@ -1034,7 +999,10 @@ function CatalogModelModal({
 export function PlatformUsagePage() {
   const [from, setFrom] = useState(daysAgo(6))
   const [to, setTo] = useState(today())
-  const usage = useLoad(() => api.get<UsageRow[]>('/platform/api/usage', { from, to }), [from, to])
+  const rangeReady = from !== '' && to !== ''
+  const usage = useLoad(
+    useCallback(() => (rangeReady ? api.get<UsageRow[]>('/platform/api/usage', { from, to }) : Promise.resolve([])), [rangeReady, from, to]),
+  )
 
   return (
     <>
@@ -1047,11 +1015,11 @@ export function PlatformUsagePage() {
           <input type="date" required value={to} onChange={(event) => setTo(event.target.value)} />
         </Field>
       </Toolbar>
-      {usage.error ? <Alert>{usage.error}</Alert> : null}
+      {!rangeReady ? <Alert>Isi tanggal “Dari” dan “Sampai”.</Alert> : usage.error ? <Alert>{usage.error}</Alert> : null}
       {usage.loading ? (
         <Loading />
-      ) : (
-        <DataTable head={['Tenant', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya']}>
+      ) : !rangeReady || usage.error ? null : (
+        <DataTable head={['Tenant', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya', 'Belum lengkap']}>
           {usage.data && usage.data.length > 0 ? (
             usage.data.map((row) => (
               <tr key={row.key}>
@@ -1061,11 +1029,16 @@ export function PlatformUsagePage() {
                 <td>{fmtNumber(row.errors)}</td>
                 <td>{fmtNumber(row.inputTokens)}</td>
                 <td>{fmtNumber(row.outputTokens)}</td>
-                <td>{fmtMoney(row.cost)}</td>
+                <td title={row.incompleteUsageRequests > 0 ? 'Biaya tercatat dari usage yang diketahui, bukan tagihan final: ada request yang usage-nya belum lengkap.' : undefined}>
+                  {row.incompleteUsageRequests > 0 ? `≈ ${fmtMoney(row.cost)}` : fmtMoney(row.cost)}
+                </td>
+                <td title={row.incompleteUsageRequests > 0 ? 'Batas bawah: usage belum terbukti lengkap.' : undefined}>
+                  {fmtNumber(row.incompleteUsageRequests)}
+                </td>
               </tr>
             ))
           ) : (
-            <EmptyRow colSpan={7} />
+            <EmptyRow colSpan={8} />
           )}
         </DataTable>
       )}
@@ -1081,14 +1054,16 @@ export function PlatformAuditPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const audit = useLoad(
-    () =>
-      api.get<Page<PlatformAuditItem>>('/platform/api/audit', {
-        from: isoOrNull(from),
-        to: isoOrNull(to),
-        page,
-        pageSize,
-      }),
-    [from, to, page, pageSize],
+    useCallback(
+      () =>
+        api.get<Page<PlatformAuditItem>>('/platform/api/audit', {
+          from: isoOrNull(from),
+          to: isoOrNull(to),
+          page,
+          pageSize,
+        }),
+      [from, to, page, pageSize],
+    ),
   )
 
   return (
@@ -1113,7 +1088,7 @@ export function PlatformAuditPage() {
       {audit.error ? <Alert>{audit.error}</Alert> : null}
       {audit.loading ? (
         <Loading />
-      ) : (
+      ) : audit.error ? null : (
         <>
           <DataTable head={['Waktu', 'User', 'Action', 'Entity', 'Entity ID', 'IP']}>
             {audit.data && audit.data.items.length > 0 ? (

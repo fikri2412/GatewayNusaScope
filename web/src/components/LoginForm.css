@@ -1,0 +1,406 @@
+/* =========================================================
+   Login (NusaScope · 01-login)
+   Semua nama class berawalan `login` supaya tidak bentrok dengan CSS lain.
+   Token warna/radius berasal dari tokens.css konsep (--ns-*).
+   ========================================================= */
+
+.login.login-page {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 100dvh;
+  padding: 0;
+  background: var(--ns-bg);
+  color: var(--ns-text);
+  font-family: var(--ns-font-sans);
+}
+
+/* ---------- Kolom form ---------- */
+
+.login-pane {
+  flex: 1 1 440px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 40px 48px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.login-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.login-form {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.login-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.login-title {
+  margin: 0;
+  font-size: var(--ns-text-2xl);
+  font-weight: 600;
+  letter-spacing: -0.8px;
+}
+
+.login-subtitle {
+  margin: 0;
+  font-size: var(--ns-text-md);
+  color: var(--ns-text-muted);
+}
+
+/* ---------- Alert: notice sesi berakhir / galat server ---------- */
+
+.login-alert {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--ns-radius-lg);
+  font-size: var(--ns-text-base);
+  line-height: 1.5;
+}
+
+.login-alert-notice {
+  background: var(--ns-accent-tint);
+  color: var(--ns-accent-hover);
+}
+
+.login-alert-error {
+  background: var(--ns-danger-tint);
+  color: var(--ns-danger);
+}
+
+/* ---------- Field ---------- */
+
+.login-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-label {
+  font-size: var(--ns-text-base);
+  font-weight: 500;
+}
+
+.login-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  background: var(--ns-surface);
+  border: 1px solid var(--ns-border-strong);
+  border-radius: var(--ns-radius-lg);
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+/* Ring fokus tetap terlihat meski input-nya tanpa outline (lihat .login-input). */
+.login-field:focus-within {
+  border-color: var(--ns-accent);
+  box-shadow: var(--ns-ring-focus);
+}
+
+.login-field:has(.login-ghost) {
+  padding-right: 6px;
+}
+
+.login-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--ns-text-md);
+  color: var(--ns-text);
+}
+
+.login-input::placeholder {
+  color: var(--ns-text-muted);
+}
+
+/* ---------- Ingat saya (checkbox) ---------- */
+
+.login-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ns-accent);
+  cursor: pointer;
+}
+
+.login-remember .login-label {
+  font-weight: 400;
+  color: var(--ns-text-2);
+  cursor: pointer;
+}
+
+/* ---------- Tombol ---------- */
+
+.login-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 48px;
+  border: none;
+  border-radius: var(--ns-radius-lg);
+  background: var(--ns-primary);
+  color: var(--ns-surface);
+  font: inherit;
+  font-size: var(--ns-text-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.login-primary:hover:not(:disabled) {
+  background: var(--ns-primary-hover);
+}
+
+.login-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-ghost {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ns-text-3);
+  cursor: pointer;
+}
+
+.login-ghost:hover {
+  background: var(--ns-muted);
+}
+
+/* Kontrol fokus native tetap dipakai untuk semua tombol. */
+.login-primary:focus-visible,
+.login-ghost:focus-visible,
+.login-switch:focus-visible {
+  outline: 2px solid var(--ns-accent);
+  outline-offset: 2px;
+}
+
+.login-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid var(--ns-text-3);
+  border-top-color: var(--ns-surface);
+  border-radius: 50%;
+  animation: login-spin 0.8s linear infinite;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Ganti mode daftar/masuk ---------- */
+
+.login-switch-row {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: var(--ns-text-base);
+  color: var(--ns-text-muted);
+}
+
+.login-switch {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ns-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-switch:hover:not(:disabled) {
+  color: var(--ns-accent-hover);
+}
+
+.login-switch:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-footer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--ns-text-sm);
+  color: var(--ns-text-muted);
+}
+
+/* Hanya tampil bila VITE_PRIVACY_URL / VITE_TERMS_URL diisi saat build. */
+.login-footer-links {
+  display: flex;
+  gap: 14px;
+}
+
+.login-footer-links a {
+  color: inherit;
+}
+
+.login-footer-links a:hover {
+  color: var(--ns-accent-hover);
+}
+
+/* ---------- Panel seni (dekoratif) ---------- */
+
+.login-art {
+  position: relative;
+  flex: 1 1 480px;
+  box-sizing: border-box;
+  margin: 12px;
+  padding: 48px;
+  border-radius: 24px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--ns-code-bg);
+  background-image: radial-gradient(#2C2C31 1px, transparent 1px);
+  background-size: 22px 22px;
+  color: var(--ns-text-on-dark);
+}
+
+.login-art-stack {
+  position: relative;
+  height: 380px;
+}
+
+.login-art-card {
+  position: absolute;
+  box-sizing: border-box;
+  width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--ns-radius-2xl);
+  background: var(--ns-text-on-dark);
+  color: var(--ns-text);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.login-art-lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.login-art-name {
+  font-size: var(--ns-text-md);
+  font-weight: 600;
+}
+
+.login-art-cap {
+  font-size: var(--ns-text-sm);
+  color: var(--ns-text-muted);
+}
+
+.login-art-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 440px;
+}
+
+.login-art-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.8px;
+  line-height: 1.15;
+}
+
+.login-art-text {
+  margin: 0;
+  font-size: var(--ns-text-md);
+  line-height: 1.6;
+  color: var(--ns-text-on-dark-muted);
+}
+
+/* Kartu model melayang — timing sama dengan konsep. */
+@keyframes login-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.login-bob-1 {
+  animation: login-bob 4s ease-in-out infinite;
+}
+
+.login-bob-2 {
+  animation: login-bob 4.6s ease-in-out 0.6s infinite;
+}
+
+.login-bob-3 {
+  animation: login-bob 5.2s ease-in-out 1.2s infinite;
+}
+
+/* ---------- Responsif & preferensi gerak ---------- */
+
+@media (max-width: 860px) {
+  .login-art {
+    display: none;
+  }
+
+  .login-pane {
+    padding: 40px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-bob-1,
+  .login-bob-2,
+  .login-bob-3 {
+    animation: none;
+  }
+
+  .login-spinner {
+    animation: none;
+  }
+}

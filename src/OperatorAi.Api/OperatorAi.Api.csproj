@@ -8,12 +8,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.*" />
+    <!-- Pinned 9.0.20 with OperatorAi.Shared (CS1705); see its csproj. -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="9.0.20" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.17" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.20" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\OperatorAi.Shared\OperatorAi.Shared.csproj" />
+    <!-- Dispatcher menjalankan DLL worker; referensi ini hanya memastikan keduanya ikut ter-build (tanpa merujuk assembly-nya). -->
+    <ProjectReference Include="..\OperatorAi.Worker.Operator\OperatorAi.Worker.Operator.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\OperatorAi.Worker.Specialist\OperatorAi.Worker.Specialist.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

@@ -61,9 +61,11 @@ public sealed class ChatProxy(
             entry.HttpStatus = response.Status;
             entry.DeniedReason = reason;
             entry.LatencyMs = (int)sw.ElapsedMilliseconds;
+            if (entry.Attempts == 0) entry.UsageIncomplete = false; // tidak ada pemakaian upstream.
             await recorder.RecordAsync(entry);
             // Opt-in (projects.log_content): isi request/response disimpan terpisah dengan masa simpan sendiri.
-            await bodyStore.RecordAsync(entry, payload is JsonObject requestBody ? requestBody.ToJsonString() : null, response.Body);
+            // Gambar inline (data URL base64) tidak pernah ikut tersimpan: diganti penanda lebih dulu.
+            await bodyStore.RecordAsync(entry, payload is JsonObject requestBody ? RequestBodyForLog(requestBody) : null, response.Body);
             return response;
         }
 
@@ -98,13 +100,8 @@ public sealed class ChatProxy(
         if (decision.Denial is { } denial)
             return await Finish(denial.ToResponse(), UsageStatuses.Denied, denial.Reason);
 
-        var routes = await db.ModelRoutes.AsNoTracking().Where(r => r.ModelId == model.Id && r.Enabled).ToListAsync(ct);
-        var providerIds = routes.Select(r => r.ProviderId).Distinct().ToList();
-        var providers = await db.Providers.AsNoTracking().Where(p => providerIds.Contains(p.Id) && p.Enabled)
-            .ToDictionaryAsync(p => p.Id, ct);
-        var credentials = await db.ProviderCredentials.AsNoTracking()
-            .Where(c => providerIds.Contains(c.ProviderId) && c.Status == CredentialStatuses.Active)
-            .ToDictionaryAsync(c => c.ProviderId, ct);
+        var targets = await ForwardingTargets.LoadAsync(db, [model.Id], ct);
+        var routeFamilies = await RouteFamiliesAsync(targets, ct);
 
         var now = clock.GetUtcNow().UtcDateTime;
         var prices = await db.ModelPrices.AsNoTracking()
@@ -125,10 +122,10 @@ public sealed class ChatProxy(
         OpenStream? open = null;
         try
         {
-            foreach (var route in RouteSelector.Order(routes, Random.Shared))
+            foreach (var route in RouteSelector.Order(targets.Routes, Random.Shared))
             {
-                if (!providers.TryGetValue(route.ProviderId, out var provider)
-                    || !credentials.TryGetValue(route.ProviderId, out var credential))
+                if (!targets.Providers.TryGetValue(route.ProviderId, out var provider)
+                    || !targets.Credentials.TryGetValue(route.ProviderId, out var credential))
                     continue;
 
                 entry.Attempts++;
@@ -136,7 +133,9 @@ public sealed class ChatProxy(
                 // ponytail: percobaan yang gagal lalu ditinggalkan tidak dicatat sendiri, jadi biaya sisi provider
                 // untuk percobaan itu tidak terlihat di usage_logs/usage_daily (plafon: satu baris per permintaan;
                 // upgrade: baris per percobaan).
-                var attempt = await TryRouteAsync(caller.TenantId, provider, credential, route, body, streaming, sw, ct);
+                var adapter = provider.TemplateId is { } templateId && routeFamilies.TryGetValue((templateId, route.UpstreamModel), out var family)
+                    ? FamilyAdapters.For(family) : null;
+                var attempt = await TryRouteAsync(caller, provider, credential, route, body, streaming, adapter, model.MaxOutputTokens, sw, ct);
                 entry.UpstreamStatus = attempt.UpstreamStatus;
                 entry.TtfbMs = attempt.TtfbMs;
                 last = attempt;
@@ -195,17 +194,19 @@ public sealed class ChatProxy(
                 {
                     // Bug di pompa tidak boleh membuat pemakaian tidak tercatat atau slot bocor.
                     log.LogError(ex, "Pompa SSE gagal (request {RequestId}, provider {ProviderId})", entry.RequestId, entry.ProviderId);
-                    outcome = new StreamOutcome(StreamEnd.Interrupted, null, null, "");
+                    outcome = new StreamOutcome(StreamEnd.Interrupted,
+                        (stream.Reader as ChatChunkReader)?.UsageSnapshot, null, "", true);
                 }
-                if (outcome.Usage is null && outcome.End == StreamEnd.Completed)
-                    // ponytail: sama dengan respons utuh: provider yang tidak mengirim usage dicatat 0 token/0 biaya.
-                    log.LogWarning("Stream selesai tanpa usage (request {RequestId}, provider {ProviderId}); token dan biaya dicatat 0.",
-                        entry.RequestId, entry.ProviderId);
                 Bill(outcome.Usage);
+                entry.UsageIncomplete |= outcome.End != StreamEnd.Completed || outcome.UsageIncomplete;
+                if (entry.UsageIncomplete)
+                    log.LogWarning("Usage stream tidak lengkap (request {RequestId}, provider {ProviderId}); token yang diketahui dipertahankan, biaya tercatat bukan tagihan final.",
+                        entry.RequestId, entry.ProviderId);
                 entry.FinishReason = outcome.FinishReason;
                 var summary = JsonSerializer.Serialize(new
                 {
                     streamed = true, content = outcome.Content, finish_reason = outcome.FinishReason, usage = outcome.Usage,
+                    usage_incomplete = entry.UsageIncomplete,
                 });
                 switch (outcome.End)
                 {
@@ -221,6 +222,7 @@ public sealed class ChatProxy(
                         {
                             StreamEnd.Timeout => "upstream_stream_timeout",
                             StreamEnd.TooLarge => "upstream_response_too_large",
+                            StreamEnd.UpstreamError => "upstream_stream_error",
                             _ => "upstream_stream_interrupted",
                         });
                         break;
@@ -238,13 +240,10 @@ public sealed class ChatProxy(
 
         if (success is JsonObject result)
         {
-            if (result["usage"] is not JsonObject)
-                // ponytail: provider yang tidak melaporkan usage dicatat 0 token/0 biaya (baris ok) supaya
-                // permintaannya tidak hilang; plafon: kuota dan laporan tidak terhitung; upgrade: estimasi token
-                // dari respons atau tolak provider yang tidak mengirim usage.
-                log.LogWarning("Respons 200 tanpa usage (request {RequestId}, provider {ProviderId}); token dan biaya dicatat 0.",
-                    entry.RequestId, entry.ProviderId);
             Bill(result["usage"]);
+            if (entry.UsageIncomplete)
+                log.LogWarning("Usage respons tidak lengkap (request {RequestId}, provider {ProviderId}); token yang diketahui dipertahankan, biaya tercatat bukan tagihan final.",
+                    entry.RequestId, entry.ProviderId);
             if (result["choices"] is JsonArray { Count: > 0 } choices) entry.FinishReason = Str(Get(choices[0], "finish_reason"));
             result["model"] = alias;
             return await Finish(new GatewayResponse(200, result.ToJsonString()), UsageStatuses.Ok);
@@ -260,8 +259,8 @@ public sealed class ChatProxy(
     }
 
     private async Task<UpstreamResult> TryRouteAsync(
-        long tenantId, Provider provider, ProviderCredential credential, ModelRoute route,
-        JsonObject body, bool streaming, Stopwatch sw, CancellationToken ct)
+        GatewayCaller caller, Provider provider, ProviderCredential credential, ModelRoute route,
+        JsonObject body, bool streaming, IFamilyAdapter? adapter, int? modelMaxOutput, Stopwatch sw, CancellationToken ct)
     {
         // Validasi ulang tepat sebelum dipakai: baris provider bisa berubah tanpa lewat provisioning (restore/seed).
         // Gagal di sini berarti permintaan tidak dikirim sama sekali, jadi key provider tidak pernah keluar.
@@ -274,52 +273,85 @@ public sealed class ChatProxy(
         }
 
         string apiKey;
-        try { apiKey = protector.Unprotect(tenantId, credential.ApiKeyEncrypted); }
+        try { apiKey = protector.Unprotect(caller.TenantId, credential.ApiKeyEncrypted); }
         catch (CryptographicException ex)
         {
             log.LogError(ex, "Key provider {ProviderId} tidak bisa didekripsi", provider.Id);
             return Failure(502, "provider_credential_unreadable", "The provider credential could not be read.", retriable: true);
         }
 
-        var upstreamBody = (JsonObject)body.DeepClone();
-        upstreamBody["model"] = route.UpstreamModel;
-        if (streaming) ForceStreamUsage(upstreamBody);
-
-        var uri = new Uri(new Uri(baseUri.AbsoluteUri.TrimEnd('/') + "/"), "chat/completions");
+        JsonObject upstreamBody;
+        Uri uri;
+        if (adapter is not null)
+        {
+            if (!adapter.TryToRequest(body, route.UpstreamModel, streaming, modelMaxOutput, out upstreamBody, out var unsupported))
+                return new UpstreamResult(false, 400,
+                    GatewayResponse.Error(400, ErrorTypes.InvalidRequest, "unsupported_request", unsupported).Body, false, null, null);
+            uri = adapter.RequestUri(baseUri);
+        }
+        else
+        {
+            upstreamBody = (JsonObject)body.DeepClone();
+            upstreamBody["model"] = route.UpstreamModel;
+            if (streaming) ForceStreamUsage(upstreamBody);
+            uri = new Uri(new Uri(baseUri.AbsoluteUri.TrimEnd('/') + "/"), "chat/completions");
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, uri)
         {
             Content = new StringContent(upstreamBody.ToJsonString(), Encoding.UTF8, "application/json"),
         };
         request.Headers.TryAddWithoutValidation(provider.AuthHeader, provider.AuthPrefix + apiKey);
+        adapter?.AddHeaders(request);
+        if (baseUri.Host.Equals("opencode.ai", StringComparison.OrdinalIgnoreCase)
+            && baseUri.AbsolutePath.StartsWith("/inference/go/", StringComparison.Ordinal))
+        {
+            if (caller.SessionId is not null) request.Headers.Add("x-opencode-session", caller.SessionId);
+            if (caller.UserAgent is not null) request.Headers.TryAddWithoutValidation("User-Agent", caller.UserAgent);
+        }
+
+        // Batas satu percobaan route: headers, event pertama sebelum commit, dan body REST (sukses maupun error)
+        // berbagi satu deadline. HttpClient.Timeout selesai begitu SendAsync mengembalikan headers
+        // (ResponseHeadersRead), jadi tanpa ini body yang menggantung menahan slot tenant tanpa batas.
+        // Token hanya dipakai sampai hasil dikembalikan; stream yang sudah diserahkan diteruskan SsePump dengan
+        // token pembatalan dan batas diam/totalnya sendiri (dispose di bawah menghentikan timer deadline).
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(options.Value.UpstreamTimeoutSeconds));
+        var opCt = deadline.Token;
 
         var maxResponseBytes = options.Value.MaxResponseBytes;
         var started = sw.ElapsedMilliseconds;
         HttpResponseMessage? response = null;
+        int? upstreamStatus = null;
+        int? ttfbMs = null;
         var keep = false; // respons stream yang diteruskan dibuang pemiliknya (OpenStream), bukan di sini
         try
         {
             response = await httpFactory.CreateClient(HttpClientName)
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, opCt);
             var ttfb = (int)(sw.ElapsedMilliseconds - started);
             var status = (int)response.StatusCode;
+            upstreamStatus = status;
+            ttfbMs = ttfb;
             var retryAfter = response.Headers.RetryAfter?.ToString();
 
             if (streaming && response.IsSuccessStatusCode
                 && string.Equals(response.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
             {
-                var (open, failure) = await OpenStreamAsync(response, status, ttfb, ct);
+                var (open, failure) = await OpenStreamAsync(response, status, ttfb, adapter, opCt);
                 if (failure is not null) return failure;
                 keep = true;
                 return new UpstreamResult(true, status, "", false, status, (int)(sw.ElapsedMilliseconds - started), Stream: open);
             }
 
             // Upstream yang mengabaikan stream:true dan menjawab JSON biasa diperlakukan sebagai respons utuh.
-            var text = await BoundedContent.ReadStringAsync(response.Content, maxResponseBytes, ct);
+            var text = await BoundedContent.ReadStringAsync(response.Content, maxResponseBytes, opCt);
 
             if (response.IsSuccessStatusCode)
             {
-                if (TryParseObject(text))
-                    return new UpstreamResult(true, status, text, false, status, ttfb);
+                var parsed = ParseObject(text);
+                if (adapter is not null && parsed is not null) parsed = adapter.ToChatCompletion(parsed);
+                if (parsed is not null)
+                    return new UpstreamResult(true, status, adapter is not null ? parsed.ToJsonString() : text, false, status, ttfb);
                 return Failure(502, "invalid_upstream_response", "The provider returned an invalid response.",
                     retriable: true, upstreamStatus: status, ttfb: ttfb);
             }
@@ -347,7 +379,10 @@ public sealed class ChatProxy(
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Failure(504, "upstream_timeout", "The provider did not respond in time.", retriable: true);
+            // Deadline percobaan, bukan klien: status dan TTFB yang sudah diketahui dipertahankan supaya log
+            // membedakan headers yang tak pernah datang dari body yang menggantung setelah headers.
+            return Failure(504, "upstream_timeout", "The provider did not respond in time.", retriable: true,
+                upstreamStatus: upstreamStatus, ttfb: ttfbMs);
         }
         catch (ResponseTooLargeException)
         {
@@ -356,6 +391,12 @@ public sealed class ChatProxy(
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
+            ct.ThrowIfCancellationRequested();
+            // Sebagian jalur transport melaporkan koneksi yang terputus saat deadline sebagai IOException, bukan
+            // OperationCanceledException; deadline tetap timeout, bukan upstream yang tidak bisa dihubungi.
+            if (opCt.IsCancellationRequested && !ct.IsCancellationRequested)
+                return Failure(504, "upstream_timeout", "The provider did not respond in time.", retriable: true,
+                    upstreamStatus: upstreamStatus, ttfb: ttfbMs);
             log.LogWarning(ex, "Provider {ProviderId} tidak bisa dihubungi", provider.Id);
             return Failure(502, "upstream_unreachable", "The provider could not be reached.", retriable: true);
         }
@@ -370,7 +411,7 @@ public sealed class ChatProxy(
     /// diganti route berikutnya. Setelah ini respons sudah "committed" dan tidak ada fallback lagi.
     /// </summary>
     private async Task<(OpenStream? Stream, UpstreamResult? Failure)> OpenStreamAsync(
-        HttpResponseMessage response, int status, int ttfb, CancellationToken ct)
+        HttpResponseMessage response, int status, int ttfb, IFamilyAdapter? adapter, CancellationToken ct)
     {
         var o = options.Value;
         var reader = new StreamReader(
@@ -389,14 +430,27 @@ public sealed class ChatProxy(
         if (!sawData || FirstEventIsError(lines))
             return (null, Failure(502, "upstream_error", "The provider returned an empty or failed stream.",
                 retriable: true, upstreamStatus: status, ttfb: ttfb));
+        if (adapter is not null)
+        {
+            // Event pertama diterjemahkan sekarang; sisanya dibaca SsePump lewat penerjemah yang sama.
+            var translator = adapter.TranslateStream(reader);
+            foreach (var raw in lines) translator.Feed(raw);
+            return (new OpenStream(response, translator, translator.Drain()), null);
+        }
         return (new OpenStream(response, reader, lines), null);
     }
 
     private static bool FirstEventIsError(List<string> lines)
     {
         foreach (var line in lines)
-            if (SsePump.TryGetData(line, out var payload))
-                return payload.Trim() != "[DONE]" && ParseObject(payload)?["error"] is JsonObject;
+        {
+            if (!SsePump.TryGetData(line, out var payload)) continue;
+            if (payload.Trim() == "[DONE]") return false;
+            var first = ParseObject(payload);
+            // Chat/Anthropic: objek "error"; Responses: event type "error" atau "response.failed".
+            var type = first?["type"] is JsonValue t && t.TryGetValue<string>(out var s) ? s : null;
+            return first?["error"] is JsonObject || type is "error" or "response.failed";
+        }
         return false;
     }
 
@@ -406,6 +460,21 @@ public sealed class ChatProxy(
         if (upstreamBody["stream_options"] is not JsonObject streamOptions)
             upstreamBody["stream_options"] = streamOptions = new JsonObject();
         streamOptions["include_usage"] = true;
+    }
+
+    /// <summary>
+    /// Family API non-chat tiap route, menurut katalog template provider: <c>(template, model upstream)</c> yang tidak
+    /// ada di hasil berbicara Chat Completions (provider custom tanpa template selalu begitu).
+    /// </summary>
+    private async Task<Dictionary<(long TemplateId, string UpstreamModel), string>> RouteFamiliesAsync(ForwardingTargets targets, CancellationToken ct)
+    {
+        var templateIds = targets.Providers.Values.Select(p => p.TemplateId).OfType<long>().Distinct().ToList();
+        if (templateIds.Count == 0) return [];
+        var names = targets.Routes.Select(r => r.UpstreamModel).Distinct().ToList();
+        var rows = await db.CatalogModels.AsNoTracking()
+            .Where(c => c.ApiFamily != ApiFamilies.OpenAiChat && templateIds.Contains(c.TemplateId) && names.Contains(c.UpstreamModel))
+            .Select(c => new { c.TemplateId, c.UpstreamModel, c.ApiFamily }).ToListAsync(ct);
+        return rows.ToDictionary(c => (c.TemplateId, c.UpstreamModel), c => c.ApiFamily);
     }
 
     private static UpstreamResult Failure(int status, string code, string message, bool retriable, int? upstreamStatus = null, int? ttfb = null) =>
@@ -441,16 +510,56 @@ public sealed class ChatProxy(
 
     private static void ReadUsage(JsonNode? usage, UsageLog entry)
     {
-        entry.InputTokens = Int(Get(usage, "prompt_tokens"));
-        entry.OutputTokens = Int(Get(usage, "completion_tokens"));
-        entry.CachedTokens = Int(Get(Get(usage, "prompt_tokens_details"), "cached_tokens"));
-        entry.ReasoningTokens = Int(Get(Get(usage, "completion_tokens_details"), "reasoning_tokens"));
+        var input = JsonAccess.TokenCount(Get(usage, "prompt_tokens"));
+        var output = JsonAccess.TokenCount(Get(usage, "completion_tokens"));
+        entry.UsageIncomplete = input is null || output is null;
+        entry.InputTokens = input ?? 0;
+        entry.OutputTokens = output ?? 0;
+        entry.CachedTokens = JsonAccess.TokenCount(Get(Get(usage, "prompt_tokens_details"), "cached_tokens")) ?? 0;
+        entry.ReasoningTokens = JsonAccess.TokenCount(Get(Get(usage, "completion_tokens_details"), "reasoning_tokens")) ?? 0;
     }
+
+    /// <summary>
+    /// Body permintaan untuk <c>projects.log_content</c>: isi data URL gambar diganti penanda supaya byte gambar
+    /// tidak pernah masuk database, walau pencatatan isi dinyalakan. Body tanpa gambar tidak disalin.
+    /// </summary>
+    private static string RequestBodyForLog(JsonObject body)
+    {
+        if (!ContainsImageData(body)) return body.ToJsonString();
+        var redacted = (JsonObject)body.DeepClone();
+        RedactImageData(redacted);
+        return redacted.ToJsonString();
+    }
+
+    /// <summary>Pemeriksaan murah lebih dulu supaya salinan body multimodal besar tidak dibuat tiap permintaan.</summary>
+    private static bool ContainsImageData(JsonNode? node) => node switch
+    {
+        JsonObject o => o.Any(pair => ImageDataUrl(pair.Value) is not null) || o.Any(pair => ContainsImageData(pair.Value)),
+        JsonArray a => a.Any(ContainsImageData),
+        _ => false,
+    };
+
+    /// <summary>Ganti isi <c>image_url</c> berbentuk data URL dengan penanda; struktur lain dibiarkan untuk debug.</summary>
+    private static void RedactImageData(JsonNode? node)
+    {
+        if (node is JsonObject o)
+        {
+            if (ImageDataUrl(o["image_url"]) is not null) o["image_url"] = "[inline image omitted]";
+            else if (o["image_url"] is JsonObject image && ImageDataUrl(image["url"]) is not null) image["url"] = "[inline image omitted]";
+            foreach (var pair in o.ToList()) RedactImageData(pair.Value);
+        }
+        else if (node is JsonArray a)
+        {
+            foreach (var item in a) RedactImageData(item);
+        }
+    }
+
+    /// <summary>URL data URL gambar (<c>data:image/...</c>) atau null.</summary>
+    private static string? ImageDataUrl(JsonNode? node) => Str(node) is { } url
+        && url.StartsWith("data:image/", StringComparison.Ordinal) ? url : null;
 
     /// <summary>Indexer JsonNode melempar bila node bukan objek; upstream tidak dipercaya, jadi baca lewat sini.</summary>
     private static JsonNode? Get(JsonNode? node, string key) => node is JsonObject o ? o[key] : null;
-
-    private static int Int(JsonNode? node) => node is JsonValue v && v.TryGetValue<int>(out var i) ? i : 0;
 
     private static string? Str(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 }

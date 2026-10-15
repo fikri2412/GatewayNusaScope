@@ -85,9 +85,13 @@ public sealed class PolicyEngine(GatewayDbContext db, RequestRateLimiter limiter
         if (rateChecks.Count > 0 && !limiter.TryAcquire(rateChecks, out var retryAfter))
             return Deny(429, ErrorTypes.RateLimit, "rate_limit_exceeded", "Too many requests; slow down.", "rate_limit_exceeded", retryAfter);
 
-        int? maxOut = policies.Values.Where(p => p.MaxTokensPerRequest is not null).Select(p => p.MaxTokensPerRequest).Min();
+        int? maxOut = MaxRequestTokens(policies);
         return new PolicyResult(null, maxOut);
     }
+
+    /// <summary>Batas output terkecil dari semua kebijakan aktif pemanggil; NULL = tidak dibatasi kebijakan.</summary>
+    public static int? MaxRequestTokens(IReadOnlyDictionary<string, Policy> policies) =>
+        policies.Values.Where(p => p.MaxTokensPerRequest is not null).Select(p => p.MaxTokensPerRequest).Min();
 
     /// <summary>
     /// Kebijakan aktif tenant, project, dan key milik pemanggil, keyed by scope (unik per scope). Dipakai engine chat

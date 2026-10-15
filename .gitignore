@@ -482,7 +482,7 @@ $RECYCLE.BIN/
 *.swp
 
 # Operator AI
-storage/
+/storage/
 node_modules/
 .env.local
 web/dist/

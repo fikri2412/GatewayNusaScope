@@ -156,6 +156,11 @@ public class Model : ITenantOwned
     public required string Alias { get; set; }
     public string? Description { get; set; }
     public int? MaxOutputTokens { get; set; }
+    /// <summary>Konfirmasi admin untuk SELURUH route model ini: NULL = belum dikonfirmasi (baris lama/import yang belum diuji).</summary>
+    public bool? SupportsTools { get; set; }
+    public bool? SupportsStreaming { get; set; }
+    /// <summary>Konfirmasi admin bahwa model menerima gambar (PNG/JPEG inline); NULL = belum dikonfirmasi.</summary>
+    public bool? SupportsVision { get; set; }
     public bool Enabled { get; set; } = true;
     public DateTime? DeletedAt { get; set; }
     [Timestamp] public byte[] RowVersion { get; set; } = [];
@@ -237,6 +242,61 @@ public class Policy : ITenantOwned
     [Timestamp] public byte[] RowVersion { get; set; } = [];
 }
 
+/// <summary>
+/// Pengaturan key/value milik tenant untuk aplikasi klien (mis. chatbot), dikelola dari UI dan dibaca klien lewat
+/// API key. Nilai disimpan polos: bukan tempat secret. Key tidak peka huruf besar/kecil (collation database).
+/// </summary>
+public class AppSetting : ITenantOwned
+{
+    public long Id { get; set; }
+    public long TenantId { get; set; }
+    public required string Namespace { get; set; }
+    public required string Key { get; set; }
+    public required string Value { get; set; }
+    public required string ValueType { get; set; }
+    public string? Description { get; set; }
+    public long? UpdatedByUserId { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    [Timestamp] public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// Laporan status aplikasi klien terakhir per (tenant, API key, namespace): nilai efektif yang diizinkan, metadata
+/// key, status sinkronisasi, dan jumlah queue/job dari sisi aplikasi. Satu baris per key+namespace (upsert); tidak
+/// berisi secret, isi prompt, atau konten pekerjaan. Kolom JSON sudah divalidasi gateway sebelum disimpan.
+/// </summary>
+public class AppStatusReport : ITenantOwned
+{
+    public long Id { get; set; }
+    public long TenantId { get; set; }
+    public long ProjectId { get; set; }
+    public long ApiKeyId { get; set; }
+    public required string Namespace { get; set; }
+    public string? SourceSettingsVersion { get; set; }
+    public required string PolicyHash { get; set; }
+    public required string PromptHash { get; set; }
+    public required string EffectiveValuesJson { get; set; }
+    public required string SupportedKeysJson { get; set; }
+    public required string SyncStatus { get; set; }
+    public DateTime? LastConfigSuccessAt { get; set; }
+    public required string RejectedKeysJson { get; set; }
+    public required string IgnoredKeysJson { get; set; }
+    public string? Reason { get; set; }
+    public long QueuePending { get; set; }
+    public long QueueProcessing { get; set; }
+    public long QueueDone { get; set; }
+    public long QueueFailed { get; set; }
+    public long JobsPending { get; set; }
+    public long JobsProcessing { get; set; }
+    public long JobsDone { get; set; }
+    public long JobsFailed { get; set; }
+    public required string ActivePoliciesJson { get; set; }
+    public int ReportIntervalSeconds { get; set; }
+    public DateTime ObservedAt { get; set; }
+    /// <summary>Jam server gateway saat laporan diterima; otoritatif untuk kesegaran (bukan jam klien).</summary>
+    public DateTime ReceivedAt { get; set; }
+}
+
 public class UsageLog : ITenantOwned
 {
     public long Id { get; set; }
@@ -263,6 +323,12 @@ public class UsageLog : ITenantOwned
     public int Attempts { get; set; }
     public bool FallbackUsed { get; set; }
     public int? UpstreamStatus { get; set; }
+    /// <summary>
+    /// True bila token/biaya baris ini tidak terbukti lengkap: upstream tidak pernah melaporkan usage final, usage
+    /// parsial, atau stream terputus sebelum usage lengkap. Token tetap angka yang diketahui (batas bawah);
+    /// biaya tercatat bukan tagihan final. Penolakan/tanpa percobaan provider tidak pernah incomplete.
+    /// </summary>
+    public bool UsageIncomplete { get; set; } = true;
     public string? EndUser { get; set; }
     public string? Tags { get; set; }
     public string? ClientIp { get; set; }
@@ -281,6 +347,8 @@ public class UsageDaily : ITenantOwned
     public long Requests { get; set; }
     public long Denied { get; set; }
     public long Errors { get; set; }
+    /// <summary>Request yang usage-nya tidak terbukti lengkap (batas bawah), ikut direkonsiliasi ulang oleh retensi.</summary>
+    public long IncompleteUsageRequests { get; set; }
     public long InputTokens { get; set; }
     public long OutputTokens { get; set; }
     public decimal Cost { get; set; }
@@ -304,5 +372,52 @@ public class PlatformSetting
 {
     public required string Key { get; set; }
     public required string ValueJson { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class SearchProviderConfig : ITenantOwned
+{
+    public long Id { get; set; }
+    public Guid PublicId { get; set; } = Guid.NewGuid();
+    public long TenantId { get; set; }
+    public required string Name { get; set; }
+    public required string Type { get; set; }
+    public required string BaseUri { get; set; }
+    public required string ApiKeyEncrypted { get; set; }
+    public required string KeyHint { get; set; }
+    public bool IsEnabled { get; set; } = true;
+    public int Weight { get; set; } = 1;
+    public string Capabilities { get; set; } = "search,extract";
+    public decimal? MonthlyBudget { get; set; }
+    public decimal CostPerSearch { get; set; } = 1m;
+    public decimal CostPerExtract { get; set; } = 1m;
+    public string ResetPolicy { get; set; } = ResetPolicies.FirstOfMonthUtc;
+    public string? ErrorMappingOverride { get; set; }
+    public DateTime? DeletedAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    [Timestamp] public byte[] RowVersion { get; set; } = [];
+}
+
+public class SearchProviderState : ITenantOwned
+{
+    public long Id { get; set; }
+    public long TenantId { get; set; }
+    public long ProviderId { get; set; }
+    public string Status { get; set; } = SearchProviderStatuses.Available;
+    public DateTime? UnavailableUntil { get; set; }
+    public decimal UsedThisPeriod { get; set; }
+    public DateTime PeriodStart { get; set; } = DateTime.UtcNow;
+    public int ConsecutiveFailures { get; set; }
+    public string? LastError { get; set; }
+    public DateTime? LastSuccessAt { get; set; }
+    public long SuccessCount { get; set; }
+    public long FailureCount { get; set; }
+    public long FailoverCount { get; set; }
+    public long Generation { get; set; }
+    public long AdminGeneration { get; set; }
+    public Guid? ProbeLeaseId { get; set; }
+    public DateTime? ProbeLeaseUntil { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

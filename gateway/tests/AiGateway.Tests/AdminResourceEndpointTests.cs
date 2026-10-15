@@ -287,6 +287,7 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
         var row = Assert.Single(summary);
         Assert.Equal(project.ToString(), (string?)row!["key"]);
         Assert.Equal(("p", (long?)2, (long?)1), ((string?)row["label"], (long?)row["requests"], (long?)row["denied"]));
+        Assert.Equal(0L, (long?)row["incompleteUsageRequests"]); // tolak dan jalur sukses ber-usage lengkap
 
         var byModel = (await BodyAsync(await SendAsync(HttpMethod.Get, $"/admin/api/usage/summary?from={day}&to={day}&groupBy=model", aToken))).AsArray();
         Assert.Contains(byModel, r => (string?)r!["key"] == model.ToString());
@@ -305,6 +306,7 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal(key.ToString(), (string?)newest["keyId"]);
         Assert.Equal(model.ToString(), (string?)newest["modelId"]);
         Assert.True(Guid.TryParse((string?)newest["requestId"], out _));
+        Assert.Equal(false, (bool?)newest["usageIncomplete"]); // usage lengkap dari upstream palsu
         Assert.DoesNotContain("tenantId", logs.ToJsonString());
         var denied = await BodyAsync(await SendAsync(HttpMethod.Get, $"/admin/api/usage/logs?from={from}&to={to}&status=denied", aToken));
         Assert.Equal(1, (int?)denied["total"]);
@@ -336,6 +338,10 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
         var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(2, lines.Length); // header + hanya baris tenant A
         Assert.StartsWith("id,created_at,request_id,project_id,api_key_id,model_id,", lines[0]);
+        var header = lines[0].TrimEnd('\r').Split(',');
+        var incompleteColumn = Array.IndexOf(header, "usage_incomplete");
+        Assert.True(incompleteColumn >= 0);
+        Assert.False(bool.Parse(lines[1].TrimEnd('\r').Split(',')[incompleteColumn]));
         Assert.Contains((await ProjectPublicIdAsync(a.ProjectId)).ToString(), lines[1]);
         Assert.Contains((await KeyPublicIdAsync(a.KeyId)).ToString(), lines[1]);
         Assert.DoesNotContain((await ProjectPublicIdAsync(b.ProjectId)).ToString(), csv);
@@ -563,6 +569,51 @@ public class AdminResourceEndpointTests(TestDb db) : GatewayTestBase(db)
         await using var ctx = Db.NewContext(s.TenantId);
         Assert.Empty(await ctx.Models.Where(m => m.Alias.EndsWith("-tier") || m.Alias == "bad-currency" || m.Alias == "huge-price").ToListAsync());
         Assert.Empty(await ctx.ModelPrices.Where(p => p.InputPricePer1M < 0).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Owners_confirm_model_capabilities_clear_them_and_route_target_changes_reset_them()
+    {
+        var (s, token) = await OwnerTenantAsync();
+        var model = await ModelPublicIdAsync(s.ModelId);
+        var provider = await ProviderPublicIdAsync(s.ProviderId);
+
+        var unconfirmed = await BodyAsync(await SendAsync(HttpMethod.Get, $"/admin/api/models/{model}", token));
+        Assert.Equal((null, (bool?)null, (bool?)null),
+            ((bool?)unconfirmed["supportsTools"], (bool?)unconfirmed["supportsStreaming"], (bool?)unconfirmed["supportsVision"]));
+
+        // Model custom baru: nilai eksplisit tersimpan, yang tidak dikirim tetap NULL (bukan tebakan).
+        var created = await BodyAsync(await SendAsync(HttpMethod.Post, "/admin/api/models", token, new
+        {
+            alias = $"custom-{Guid.NewGuid():N}"[..24], supportsTools = true, supportsStreaming = false, supportsVision = true,
+            routes = new[] { new { providerId = provider, upstreamModel = "real-model" } },
+        }));
+        Assert.Equal((true, false, true),
+            ((bool?)created["supportsTools"], (bool?)created["supportsStreaming"], (bool?)created["supportsVision"]));
+
+        var confirmed = await BodyAsync(await SendAsync(HttpMethod.Patch, $"/admin/api/models/{model}", token,
+            new { supportsTools = true, supportsStreaming = false, supportsVision = true }));
+        Assert.Equal((true, false, true),
+            ((bool?)confirmed["supportsTools"], (bool?)confirmed["supportsStreaming"], (bool?)confirmed["supportsVision"]));
+
+        // Set target sama (hanya atribut route): konfirmasi bertahan. Upstream berbeda: semuanya dikosongkan.
+        var same = await BodyAsync(await SendAsync(HttpMethod.Put, $"/admin/api/models/{model}/routes", token,
+            new { routes = new[] { new { providerId = provider, upstreamModel = "real-model", priority = 2 } } }));
+        Assert.Equal((true, false, true),
+            ((bool?)same["supportsTools"], (bool?)same["supportsStreaming"], (bool?)same["supportsVision"]));
+        var changed = await BodyAsync(await SendAsync(HttpMethod.Put, $"/admin/api/models/{model}/routes", token,
+            new { routes = new[] { new { providerId = provider, upstreamModel = "real-model-v2" } } }));
+        Assert.Equal((null, (bool?)null, (bool?)null),
+            ((bool?)changed["supportsTools"], (bool?)changed["supportsStreaming"], (bool?)changed["supportsVision"]));
+
+        var reConfirmed = await BodyAsync(await SendAsync(HttpMethod.Patch, $"/admin/api/models/{model}", token,
+            new { supportsTools = true, supportsStreaming = true, supportsVision = true }));
+        Assert.Equal((true, true, true),
+            ((bool?)reConfirmed["supportsTools"], (bool?)reConfirmed["supportsStreaming"], (bool?)reConfirmed["supportsVision"]));
+        var cleared = await BodyAsync(await SendAsync(HttpMethod.Patch, $"/admin/api/models/{model}", token,
+            new { clearSupportsTools = true, clearSupportsStreaming = true, clearSupportsVision = true }));
+        Assert.Equal((null, (bool?)null, (bool?)null),
+            ((bool?)cleared["supportsTools"], (bool?)cleared["supportsStreaming"], (bool?)cleared["supportsVision"]));
     }
 
     [Fact]

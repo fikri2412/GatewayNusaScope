@@ -38,8 +38,8 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
     }
 
     private static bool IsTenantMutation(HttpRequest request) =>
-        request.Path.StartsWithSegments("/admin/api")
-        && !request.Path.StartsWithSegments("/admin/api/auth")
+        (request.Path.StartsWithSegments("/admin/api") && !request.Path.StartsWithSegments("/admin/api/auth")
+         || request.Path.StartsWithSegments("/admin/providers"))
         && !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method) && !HttpMethods.IsOptions(request.Method);
 }
 

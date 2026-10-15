@@ -1,37 +1,21 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import { api, errorMessage } from '../api'
 import { canConfigure, useAuth } from '../auth'
 import type { CatalogModelDto, ModelDto, ProviderDto, TemplateDto } from '../types'
-import {
-  Alert,
-  DataTable,
-  EmptyRow,
-  Field,
-  Fieldset,
-  fmtDateTime,
-  fmtMoney,
-  fmtNumber,
-  Loading,
-  Modal,
-  PageHeader,
-  Toolbar,
-  useLoad,
-} from '../ui'
+import { Alert, DataTable, EmptyRow, Field, Fieldset, Loading, Modal, PageHeader, Toolbar } from '../ui'
+import { fmtDateTime, fmtMoney, fmtNumber, useLoad } from '../ui-helpers'
+import { emptyTier, tierIssue, tierPayload, toNumber, type TierForm } from './provider-form'
 
-export function toNumber(value: string): number | null {
-  const trimmed = value.trim()
-  if (trimmed === '') return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
-}
+/** Cermin ApiFamilies.Forwardable di server: family katalog yang bisa diimpor dan diteruskan. */
+const FORWARDABLE_FAMILIES = ['openai_chat', 'anthropic_messages', 'openai_responses']
 
 /* ------------------------------- Providers ------------------------------- */
 
 export function ProvidersPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const providers = useLoad(() => api.get<ProviderDto[]>('/admin/api/providers'), [])
-  const templates = useLoad(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), [])
+  const providers = useLoad(useCallback(() => api.get<ProviderDto[]>('/admin/api/providers'), []))
+  const templates = useLoad(useCallback(() => api.get<TemplateDto[]>('/admin/api/catalog/templates'), []))
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<ProviderDto | null>(null)
@@ -50,7 +34,7 @@ export function ProvidersPage() {
   }
 
   async function remove(provider: ProviderDto) {
-    if (!window.confirm(`Hapus provider "${provider.name}"? Model yang memakai provider ini bisa kehilangan route.`)) return
+    if (!window.confirm(`Hapus provider "${provider.name}"? Provider yang masih dipakai route model tidak bisa dihapus.`)) return
     setError(null)
     try {
       await api.del(`/admin/api/providers/${provider.id}`)
@@ -75,9 +59,10 @@ export function ProvidersPage() {
       />
       {error ? <Alert>{error}</Alert> : null}
       {providers.error ? <Alert>{providers.error}</Alert> : null}
+      {templates.error ? <Alert>{templates.error}</Alert> : null}
       {providers.loading ? (
         <Loading />
-      ) : (
+      ) : providers.error ? null : (
         <DataTable head={['Nama', 'Tipe', 'Template', 'Base URL', 'Key', 'Status', 'Aksi']}>
           {providers.data && providers.data.length > 0 ? (
             providers.data.map((provider) => (
@@ -154,26 +139,8 @@ export function ProvidersPage() {
           }}
         />
       ) : null}
-      {discovering ? (
-        <DiscoverModal
-          provider={discovering}
-          onClose={() => setDiscovering(null)}
-          onImported={() => {
-            setDiscovering(null)
-            providers.reload()
-          }}
-        />
-      ) : null}
-      {importing ? (
-        <ImportModelsModal
-          provider={importing}
-          onClose={() => setImporting(null)}
-          onImported={() => {
-            setImporting(null)
-            providers.reload()
-          }}
-        />
-      ) : null}
+      {discovering ? <DiscoverModal provider={discovering} onClose={() => setDiscovering(null)} /> : null}
+      {importing ? <ImportModelsModal provider={importing} onClose={() => setImporting(null)} /> : null}
     </>
   )
 }
@@ -275,7 +242,7 @@ function CreateProviderModal({ templates, onClose, onCreated }: { templates: Tem
             <Field label="Auth prefix" hint="Contoh: Bearer.">
               <input value={authPrefix} onChange={(event) => setAuthPrefix(event.target.value)} />
             </Field>
-            <Field label="Models path" hint="Contoh: /models untuk discovery.">
+            <Field label="Models path" hint="Path relatif tanpa awalan '/', contoh: models untuk discovery.">
               <input value={modelsPath} onChange={(event) => setModelsPath(event.target.value)} />
             </Field>
           </>
@@ -308,6 +275,8 @@ function EditProviderModal({ provider, onClose, onSaved }: { provider: ProviderD
     event.preventDefault()
     setBusy(true)
     setError(null)
+    // Kolom kosong berarti pemilik provider mengosongkan models path; PATCH backend menolak string kosong.
+    const clearPath = clearModelsPath || modelsPath.trim() === ''
     try {
       await api.patch(`/admin/api/providers/${provider.id}`, {
         name,
@@ -315,8 +284,8 @@ function EditProviderModal({ provider, onClose, onSaved }: { provider: ProviderD
         enabled,
         authHeader,
         authPrefix,
-        modelsPath: clearModelsPath ? null : modelsPath,
-        clearModelsPath,
+        modelsPath: clearPath ? null : modelsPath.trim(),
+        clearModelsPath: clearPath,
       })
       onSaved()
     } catch (err) {
@@ -404,8 +373,8 @@ function RotateKeyModal({ provider, onClose, onSaved }: { provider: ProviderDto;
   )
 }
 
-function DiscoverModal({ provider, onClose, onImported }: { provider: ProviderDto; onClose: () => void; onImported: () => void }) {
-  const discovery = useLoad(() => api.post<{ models: string[] }>(`/admin/api/providers/${provider.id}/discover`), [provider.id])
+function DiscoverModal({ provider, onClose }: { provider: ProviderDto; onClose: () => void }) {
+  const discovery = useLoad(useCallback(() => api.post<{ models: string[] }>(`/admin/api/providers/${provider.id}/discover`), [provider.id]))
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<{ created: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -432,7 +401,6 @@ function DiscoverModal({ provider, onClose, onImported }: { provider: ProviderDt
         { source: 'discovered', upstreamModels: [...selected] },
       )
       setResult({ created: response.created.length, skipped: response.skipped })
-      onImported()
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -447,7 +415,7 @@ function DiscoverModal({ provider, onClose, onImported }: { provider: ProviderDt
       {discovery.error ? <Alert>{discovery.error}</Alert> : null}
       {discovery.loading ? (
         <Loading label="Menghubungi provider…" />
-      ) : models.length === 0 ? (
+      ) : discovery.error ? null : models.length === 0 ? (
         <p className="muted">Provider tidak mengembalikan model.</p>
       ) : (
         <>
@@ -483,18 +451,23 @@ function DiscoverModal({ provider, onClose, onImported }: { provider: ProviderDt
   )
 }
 
-function ImportModelsModal({ provider, onClose, onImported }: { provider: ProviderDto; onClose: () => void; onImported: () => void }) {
+function ImportModelsModal({ provider, onClose }: { provider: ProviderDto; onClose: () => void }) {
   const catalog = useLoad(
-    () => (provider.templateCode ? api.get<CatalogModelDto[]>('/admin/api/catalog/models', { templateCode: provider.templateCode }) : Promise.resolve([])),
-    [provider.templateCode],
+    useCallback(
+      () =>
+        provider.templateCode
+          ? api.get<CatalogModelDto[]>('/admin/api/catalog/models', { templateCode: provider.templateCode })
+          : Promise.resolve([]),
+      [provider.templateCode],
+    ),
   )
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<{ created: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // Gateway hanya meneruskan family openai_chat; entri lain disaring server.
-  const models = (catalog.data ?? []).filter((model) => model.enabled && model.apiFamily === 'openai_chat')
+  // Gateway meneruskan family openai_chat, anthropic_messages, dan openai_responses (diterjemahkan); entri lain disaring server.
+  const models = (catalog.data ?? []).filter((model) => model.enabled && FORWARDABLE_FAMILIES.includes(model.apiFamily ?? ''))
 
   function toggle(upstreamModel: string) {
     setSelected((current) => {
@@ -515,7 +488,6 @@ function ImportModelsModal({ provider, onClose, onImported }: { provider: Provid
         { source: 'catalog', upstreamModels: [...selected] },
       )
       setResult({ created: response.created.length, skipped: response.skipped })
-      onImported()
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -534,10 +506,10 @@ function ImportModelsModal({ provider, onClose, onImported }: { provider: Provid
       ) : catalog.loading ? (
         <Loading />
       ) : models.length === 0 ? (
-        <p className="muted">Belum ada entri katalog openai_chat yang aktif untuk template ini.</p>
+        <p className="muted">Belum ada entri katalog yang bisa diteruskan dan aktif untuk template ini.</p>
       ) : (
         <>
-          <p className="muted">Hanya entri katalog family <span className="mono">openai_chat</span> yang aktif yang bisa diimpor.</p>
+          <p className="muted">Hanya entri katalog family <span className="mono">openai_chat</span>, <span className="mono">anthropic_messages</span>, dan <span className="mono">openai_responses</span> yang aktif yang bisa diimpor.</p>
           <Toolbar>
             <button type="button" className="ghost" onClick={() => setSelected(new Set(models.map((model) => model.upstreamModel)))}>
               Pilih semua
@@ -580,16 +552,64 @@ interface RouteForm {
   weight: string
 }
 
-export interface TierForm {
-  minInputTokens: string
-  input: string
-  output: string
-  cacheRead: string
-  cacheWrite: string
+const emptyRoute = (providerId = ''): RouteForm => ({ providerId, upstreamModel: '', priority: '0', weight: '1' })
+
+/** Konfirmasi capabilities tri-state: 'unknown' = belum dikonfirmasi (NULL di API) dan membuat model tidak layak dipakai chatbot. */
+type CapabilityState = 'unknown' | 'yes' | 'no'
+
+const capabilityValue = (state: CapabilityState): boolean | null => (state === 'unknown' ? null : state === 'yes')
+
+const capabilityState = (value: boolean | null): CapabilityState => (value === null ? 'unknown' : value ? 'yes' : 'no')
+
+const capabilityLabel = (value: boolean | null): string => (value === null ? 'belum dikonfirmasi' : value ? 'ya' : 'tidak')
+
+function CapabilityFields({
+  tools,
+  streaming,
+  vision,
+  onChange,
+}: {
+  tools: CapabilityState
+  streaming: CapabilityState
+  vision: CapabilityState
+  onChange: (patch: { tools?: CapabilityState; streaming?: CapabilityState; vision?: CapabilityState }) => void
+}) {
+  return (
+    <>
+      <Field label="Dukungan tools" hint="Konfirmasi hanya setelah uji nyata. Berlaku untuk seluruh route model ini, termasuk route nonaktif.">
+        <select value={tools} onChange={(event) => onChange({ tools: event.target.value as CapabilityState })}>
+          <option value="unknown">Belum dikonfirmasi</option>
+          <option value="yes">Didukung</option>
+          <option value="no">Tidak didukung</option>
+        </select>
+      </Field>
+      <Field label="Dukungan streaming" hint="“Belum dikonfirmasi” tetap boleh; chatbot hanya menandainya.">
+        <select value={streaming} onChange={(event) => onChange({ streaming: event.target.value as CapabilityState })}>
+          <option value="unknown">Belum dikonfirmasi</option>
+          <option value="yes">Didukung</option>
+          <option value="no">Tidak didukung</option>
+        </select>
+      </Field>
+      <Field label="Dukungan vision" hint="Hanya model yang dikonfirmasi “Didukung” yang menerima gambar (PNG/JPEG) dari chatbot.">
+        <select value={vision} onChange={(event) => onChange({ vision: event.target.value as CapabilityState })}>
+          <option value="unknown">Belum dikonfirmasi</option>
+          <option value="yes">Didukung</option>
+          <option value="no">Tidak didukung</option>
+        </select>
+      </Field>
+    </>
+  )
 }
 
-const emptyRoute = (providerId = ''): RouteForm => ({ providerId, upstreamModel: '', priority: '0', weight: '1' })
-export const emptyTier = (): TierForm => ({ minInputTokens: '', input: '', output: '', cacheRead: '', cacheWrite: '' })
+/** Baris route yang terisi sebagian akan hilang dari payload; tolak sebelum menyimpan. */
+function routeIssue(routes: RouteForm[]): string | null {
+  const index = routes.findIndex(
+    (route) =>
+      (route.providerId !== '' || route.upstreamModel.trim() !== '') &&
+      (route.providerId === '' || route.upstreamModel.trim() === ''),
+  )
+  return index === -1 ? null : `Route ${index + 1} belum lengkap: pilih provider dan isi model upstream, atau hapus barisnya.`
+}
 
 function routePayload(routes: RouteForm[]) {
   return routes
@@ -599,18 +619,6 @@ function routePayload(routes: RouteForm[]) {
       upstreamModel: route.upstreamModel.trim(),
       priority: toNumber(route.priority) ?? 0,
       weight: toNumber(route.weight) ?? 1,
-    }))
-}
-
-export function tierPayload(tiers: TierForm[]) {
-  return tiers
-    .filter((tier) => tier.minInputTokens.trim() !== '' && tier.input.trim() !== '' && tier.output.trim() !== '')
-    .map((tier) => ({
-      minInputTokens: toNumber(tier.minInputTokens) ?? 0,
-      input: toNumber(tier.input) ?? 0,
-      output: toNumber(tier.output) ?? 0,
-      cacheRead: toNumber(tier.cacheRead),
-      cacheWrite: toNumber(tier.cacheWrite),
     }))
 }
 
@@ -693,8 +701,8 @@ export function TierRows({ tiers, onChange }: { tiers: TierForm[]; onChange: (ti
 export function ModelsPage() {
   const { user } = useAuth()
   const writable = !!user && canConfigure(user)
-  const models = useLoad(() => api.get<ModelDto[]>('/admin/api/models'), [])
-  const providers = useLoad(() => api.get<ProviderDto[]>('/admin/api/providers'), [])
+  const models = useLoad(useCallback(() => api.get<ModelDto[]>('/admin/api/models'), []))
+  const providers = useLoad(useCallback(() => api.get<ProviderDto[]>('/admin/api/providers'), []))
   const [error, setError] = useState<string | null>(null)
   const [addingPrice, setAddingPrice] = useState<ModelDto | null>(null)
   const [creating, setCreating] = useState(false)
@@ -740,8 +748,8 @@ export function ModelsPage() {
       {providers.error ? <Alert>{providers.error}</Alert> : null}
       {models.loading ? (
         <Loading />
-      ) : (
-        <DataTable head={['Alias', 'Deskripsi', 'Routes', 'Max output', 'Harga', 'Status', 'Aksi']}>
+      ) : models.error ? null : (
+        <DataTable head={['Alias', 'Deskripsi', 'Routes', 'Max output', 'Fitur', 'Harga', 'Status', 'Aksi']}>
           {models.data && models.data.length > 0 ? (
             models.data.map((model) => (
               <tr key={model.id}>
@@ -762,6 +770,17 @@ export function ModelsPage() {
                   )}
                 </td>
                 <td>{fmtNumber(model.maxOutputTokens)}</td>
+                <td>
+                  <span className={model.supportsTools === null ? 'badge' : model.supportsTools ? 'badge ok' : 'badge off'}>
+                    tools: {capabilityLabel(model.supportsTools)}
+                  </span>{' '}
+                  <span className={model.supportsStreaming === null ? 'badge' : model.supportsStreaming ? 'badge ok' : 'badge off'}>
+                    streaming: {capabilityLabel(model.supportsStreaming)}
+                  </span>{' '}
+                  <span className={model.supportsVision === null ? 'badge' : model.supportsVision ? 'badge ok' : 'badge off'}>
+                    vision: {capabilityLabel(model.supportsVision)}
+                  </span>
+                </td>
                 <td>
                   {model.price
                     ? `${fmtMoney(model.price.input, model.price.currency)} / ${fmtMoney(model.price.output, model.price.currency)}${
@@ -798,7 +817,7 @@ export function ModelsPage() {
               </tr>
             ))
           ) : (
-            <EmptyRow colSpan={7} />
+            <EmptyRow colSpan={8} />
           )}
         </DataTable>
       )}
@@ -852,6 +871,9 @@ function CreateModelModal({ providers, onClose, onCreated }: { providers: Provid
   const [alias, setAlias] = useState('')
   const [description, setDescription] = useState('')
   const [maxOutputTokens, setMaxOutputTokens] = useState('')
+  const [tools, setTools] = useState<CapabilityState>('unknown')
+  const [streaming, setStreaming] = useState<CapabilityState>('unknown')
+  const [vision, setVision] = useState<CapabilityState>('unknown')
   const [routes, setRoutes] = useState<RouteForm[]>([emptyRoute(providers[0]?.id ?? '')])
   const [withPrice, setWithPrice] = useState(true)
   const [input, setInput] = useState('')
@@ -865,10 +887,22 @@ function CreateModelModal({ providers, onClose, onCreated }: { providers: Provid
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const routeCheck = routeIssue(routes)
+    if (routeCheck) {
+      setError(routeCheck)
+      return
+    }
     const routePayloadValue = routePayload(routes)
     if (routePayloadValue.length === 0) {
       setError('Minimal satu route dengan provider dan model upstream.')
       return
+    }
+    if (withPrice) {
+      const tierCheck = tierIssue(tiers)
+      if (tierCheck) {
+        setError(tierCheck)
+        return
+      }
     }
     setBusy(true)
     setError(null)
@@ -877,6 +911,9 @@ function CreateModelModal({ providers, onClose, onCreated }: { providers: Provid
         alias: alias.trim(),
         description: description.trim() || null,
         maxOutputTokens: toNumber(maxOutputTokens),
+        supportsTools: capabilityValue(tools),
+        supportsStreaming: capabilityValue(streaming),
+        supportsVision: capabilityValue(vision),
         routes: routePayloadValue,
         price: withPrice
           ? {
@@ -910,6 +947,16 @@ function CreateModelModal({ providers, onClose, onCreated }: { providers: Provid
         <Field label="Max output token">
           <input type="number" min={1} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} />
         </Field>
+        <CapabilityFields
+          tools={tools}
+          streaming={streaming}
+          vision={vision}
+          onChange={(patch) => {
+            if (patch.tools !== undefined) setTools(patch.tools)
+            if (patch.streaming !== undefined) setStreaming(patch.streaming)
+            if (patch.vision !== undefined) setVision(patch.vision)
+          }}
+        />
         <RouteRows routes={routes} providers={providers} onChange={setRoutes} />
         <label className="inline">
           <input type="checkbox" checked={withPrice} onChange={(event) => setWithPrice(event.target.checked)} /> Sertakan harga awal
@@ -954,6 +1001,9 @@ function EditModelModal({ model, onClose, onSaved }: { model: ModelDto; onClose:
   const [enabled, setEnabled] = useState(model.enabled)
   const [maxOutputTokens, setMaxOutputTokens] = useState(model.maxOutputTokens === null ? '' : String(model.maxOutputTokens))
   const [clearMaxOutputTokens, setClearMaxOutputTokens] = useState(false)
+  const [tools, setTools] = useState<CapabilityState>(capabilityState(model.supportsTools))
+  const [streaming, setStreaming] = useState<CapabilityState>(capabilityState(model.supportsStreaming))
+  const [vision, setVision] = useState<CapabilityState>(capabilityState(model.supportsVision))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -961,12 +1011,24 @@ function EditModelModal({ model, onClose, onSaved }: { model: ModelDto; onClose:
     event.preventDefault()
     setBusy(true)
     setError(null)
+    // Kolom kosong = pengguna mengosongkan batas; jangan kirim "tanpa perubahan" yang membuat nilai lama tetap tampak kosong.
+    const clearMax = clearMaxOutputTokens || maxOutputTokens.trim() === ''
+    // "Belum dikonfirmasi" mengirim clear: capability NULL berarti model tidak ditawarkan ke chatbot.
+    const toolsValue = capabilityValue(tools)
+    const streamingValue = capabilityValue(streaming)
+    const visionValue = capabilityValue(vision)
     try {
       await api.patch(`/admin/api/models/${model.id}`, {
-        description,
+        description: description.trim(),
         enabled,
-        maxOutputTokens: clearMaxOutputTokens ? null : toNumber(maxOutputTokens),
-        clearMaxOutputTokens,
+        maxOutputTokens: clearMax ? null : toNumber(maxOutputTokens),
+        clearMaxOutputTokens: clearMax,
+        supportsTools: toolsValue,
+        clearSupportsTools: toolsValue === null,
+        supportsStreaming: streamingValue,
+        clearSupportsStreaming: streamingValue === null,
+        supportsVision: visionValue,
+        clearSupportsVision: visionValue === null,
       })
       onSaved()
     } catch (err) {
@@ -989,6 +1051,16 @@ function EditModelModal({ model, onClose, onSaved }: { model: ModelDto; onClose:
         <label className="inline">
           <input type="checkbox" checked={clearMaxOutputTokens} onChange={(event) => setClearMaxOutputTokens(event.target.checked)} /> Kosongkan max output token
         </label>
+        <CapabilityFields
+          tools={tools}
+          streaming={streaming}
+          vision={vision}
+          onChange={(patch) => {
+            if (patch.tools !== undefined) setTools(patch.tools)
+            if (patch.streaming !== undefined) setStreaming(patch.streaming)
+            if (patch.vision !== undefined) setVision(patch.vision)
+          }}
+        />
         <label className="inline">
           <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /> Model aktif
         </label>
@@ -1019,6 +1091,11 @@ function RoutesModal({ model, providers, onClose, onSaved }: { model: ModelDto; 
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const routeCheck = routeIssue(routes)
+    if (routeCheck) {
+      setError(routeCheck)
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -1035,7 +1112,7 @@ function RoutesModal({ model, providers, onClose, onSaved }: { model: ModelDto; 
     <Modal title={`Routes — ${model.alias}`} onClose={onClose} wide>
       <form onSubmit={submit} className="form">
         {error ? <Alert>{error}</Alert> : null}
-        <p className="muted">Daftar route menggantikan seluruh route model ini.</p>
+        <p className="muted">Daftar route menggantikan seluruh route model ini. Mengganti provider atau model upstream mengosongkan konfirmasi tools/streaming.</p>
         <RouteRows routes={routes} providers={providers} onChange={setRoutes} />
         <div className="form-actions">
           <button type="submit" disabled={busy}>
@@ -1070,6 +1147,11 @@ function PriceModal({ model, onClose, onSaved }: { model: ModelDto; onClose: () 
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const tierCheck = tierIssue(tiers)
+    if (tierCheck) {
+      setError(tierCheck)
+      return
+    }
     setBusy(true)
     setError(null)
     try {

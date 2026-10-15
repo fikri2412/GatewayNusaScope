@@ -104,13 +104,21 @@ public static class RequestProtection
         return services;
     }
 
+    /// <summary>
+    /// Path admin/platform: no-store + batas body, dan (tenant yang disuspend) larangan mutasi. Satu definisi
+    /// supaya /admin/providers tidak lolos dari proteksi yang sama dengan /admin/api.
+    /// </summary>
+    public static bool IsAdminPath(PathString path) =>
+        path.StartsWithSegments("/admin/api") || path.StartsWithSegments("/admin/providers")
+        || path.StartsWithSegments("/platform/api");
+
     public static IApplicationBuilder UseRequestProtection(this IApplicationBuilder app) => app.Use(async (http, next) =>
     {
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
         http.Response.Headers["X-Frame-Options"] = "DENY";
         http.Response.Headers["Referrer-Policy"] = "no-referrer";
         http.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
-        if (http.Request.Path.StartsWithSegments("/admin/api") || http.Request.Path.StartsWithSegments("/platform/api"))
+        if (IsAdminPath(http.Request.Path))
         {
             http.Response.Headers.CacheControl = "no-store";
             var limit = http.RequestServices.GetRequiredService<IOptions<RequestProtectionOptions>>().Value.MaxAdminRequestBytes;
@@ -123,9 +131,10 @@ public static class RequestProtection
         finally
         {
             // Tidak melabeli tenant, URI mentah, token, atau email: cardinality metrik tetap terbatas.
-            var area = http.Request.Path.StartsWithSegments("/v1") ? "data" :
-                http.Request.Path.StartsWithSegments("/platform/api") ? "platform" :
-                http.Request.Path.StartsWithSegments("/admin/api") ? "admin" : "web";
+            var path = http.Request.Path;
+            var area = path.StartsWithSegments("/v1") || path.StartsWithSegments("/client/api") ? "data" :
+                path.StartsWithSegments("/platform/api") ? "platform" :
+                IsAdminPath(path) ? "admin" : "web";
             Requests.Add(1, new KeyValuePair<string, object?>("area", area), new("status", http.Response.StatusCode));
             Duration.Record(Stopwatch.GetElapsedTime(started).TotalMilliseconds, new KeyValuePair<string, object?>("area", area));
         }

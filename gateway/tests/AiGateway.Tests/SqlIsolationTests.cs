@@ -72,7 +72,7 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
 
         Assert.Equal(3, Convert.ToInt32(await ScalarAsync(conn,
             "SELECT COUNT(*) FROM sys.database_principals WHERE type = 'R' AND name IN (N'gateway_app', N'gateway_platform', N'gateway_migration');")));
-        foreach (var policy in new[] { "tenant_isolation_policy", "maintenance_isolation_policy" })
+        foreach (var policy in new[] { "tenant_isolation_policy", "maintenance_isolation_policy", "settings_isolation_policy", "app_status_isolation_policy" })
             Assert.True(Convert.ToBoolean(await ScalarAsync(conn,
                 $"SELECT is_enabled FROM sys.security_policies WHERE name = N'{policy}';")), policy);
         // Setiap tabel yang punya tenant_id (kecuali users) ditutup tepat FILTER + BLOCK INSERT + BLOCK UPDATE.
@@ -414,7 +414,7 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
     private static async Task<bool> TableExistsAsync(DbConnection conn, string name) =>
         await ScalarAsync(conn, "SELECT OBJECT_ID(N'dbo.' + @name, N'U');", ("@name", name)) is not null and not DBNull;
 
-    /// <summary>Jumlah predicate per tabel sasaran untuk kedua security policy RLS.</summary>
+    /// <summary>Jumlah predicate per tabel sasaran untuk keempat security policy RLS.</summary>
     private static async Task<Dictionary<string, int>> PredicateCountsAsync(DbConnection conn)
     {
         await using var cmd = conn.CreateCommand();
@@ -422,7 +422,7 @@ public class SqlIsolationTests(TestDb testDb) : IClassFixture<TestDb>
             SELECT t.name, COUNT(*) FROM sys.security_predicates p
             JOIN sys.security_policies s ON s.object_id = p.object_id
             JOIN sys.tables t ON t.object_id = p.target_object_id
-            WHERE s.name IN (N'tenant_isolation_policy', N'maintenance_isolation_policy')
+            WHERE s.name IN (N'tenant_isolation_policy', N'maintenance_isolation_policy', N'settings_isolation_policy', N'app_status_isolation_policy', N'search_provider_isolation_policy')
             GROUP BY t.name;
             """;
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);

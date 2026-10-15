@@ -19,8 +19,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OperatorAi.Shared\OperatorAi.Shared.csproj" />
+    <ProjectReference Include="..\..\src\OperatorAi.Api\OperatorAi.Api.csproj" />
     <ProjectReference Include="..\..\src\OperatorAi.Worker.Operator\OperatorAi.Worker.Operator.csproj" />
     <ProjectReference Include="..\..\src\OperatorAi.Worker.Specialist\OperatorAi.Worker.Specialist.csproj" />
+    <Content Include="..\samples\**\*" Link="samples\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

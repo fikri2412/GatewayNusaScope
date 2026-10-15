@@ -43,7 +43,7 @@ public sealed record PlatformAuditRow(long Id, long? UserId, string Action, stri
 /// dibaca lewat jalur eksplisit: tabel tanpa filter, operator IgnoreQueryFilters, atau konteks tenant sementara.
 /// </summary>
 public sealed partial class PlatformService(
-    GatewayDbContext db, ProvisioningService provisioning, UserAdminService users, UsageReports reports, OpenCodeCatalogSync sync,
+    GatewayDbContext db, ProvisioningService provisioning, UserAdminService users, PlatformDb platform, OpenCodeCatalogSync sync,
     OutboundSecurityPolicy outbound)
 {
     // --- plan ----------------------------------------------------------------------------------
@@ -156,10 +156,13 @@ public sealed partial class PlatformService(
 
     // --- ringkasan lintas tenant ---------------------------------------------------------------
 
-    /// <summary>Pemakaian semua tenant; kunci baris diganti public_id agar id internal tidak ikut keluar.</summary>
+    /// <summary>
+    /// Pemakaian semua tenant; kunci baris diganti public_id agar id internal tidak ikut keluar. Dibaca lewat
+    /// koneksi platform: dengan RLS aktif, koneksi aplikasi tidak melihat baris tenant mana pun.
+    /// </summary>
     public async Task<List<UsageRow>> PlatformUsageAsync(DateOnly from, DateOnly to, CancellationToken ct)
     {
-        var rows = await reports.PlatformOverviewAsync(from, to, ct);
+        var rows = await platform.RunAsync(db, platformDb => new UsageReports(platformDb).PlatformOverviewAsync(from, to, ct));
         var ids = rows.Select(r => long.TryParse(r.Key, out var id) ? id : 0).Where(id => id != 0).Distinct().ToList();
         var publicIds = await db.Tenants.AsNoTracking().Where(t => ids.Contains(t.Id)).ToDictionaryAsync(t => t.Id, t => t.PublicId, ct);
         return rows.Select(r => long.TryParse(r.Key, out var id) && publicIds.TryGetValue(id, out var publicId)
@@ -168,7 +171,8 @@ public sealed partial class PlatformService(
 
     /// <summary>
     /// Audit seluruh instalasi (semua tenant dan aksi tingkat platform), <b>metadata saja</b>: tanpa
-    /// <c>detail_json</c> sehingga detail milik tenant tidak ikut terbaca platform admin.
+    /// <c>detail_json</c> sehingga detail milik tenant tidak ikut terbaca platform admin. Dibaca lewat koneksi
+    /// platform (lihat <see cref="PlatformDb"/>).
     /// </summary>
     public async Task<Page<PlatformAuditRow>> PlatformAuditAsync(DateTime? from, DateTime? to, int page, int pageSize, CancellationToken ct)
     {
@@ -176,13 +180,16 @@ public sealed partial class PlatformService(
         pageSize = Math.Clamp(pageSize, 1, UsageReports.MaxPageSize);
         page = Math.Clamp(page, 1, UsageReports.MaxPageNumber); // batas atas: offset tidak boleh overflow int
 
-        var q = db.AuditLogs.AsNoTracking();
-        if (from is { } fromValue) q = q.Where(a => a.CreatedAt >= fromValue);
-        if (to is { } toValue) q = q.Where(a => a.CreatedAt < toValue);
-        var total = await q.CountAsync(ct);
-        var items = await q.OrderByDescending(a => a.Id).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(a => new PlatformAuditRow(a.Id, a.UserId, a.Action, a.Entity, a.EntityId, a.Ip, a.CreatedAt)).ToListAsync(ct);
-        return new Page<PlatformAuditRow>(items, total, page, pageSize);
+        return await platform.RunAsync(db, async platformDb =>
+        {
+            var q = platformDb.AuditLogs.AsNoTracking();
+            if (from is { } fromValue) q = q.Where(a => a.CreatedAt >= fromValue);
+            if (to is { } toValue) q = q.Where(a => a.CreatedAt < toValue);
+            var total = await q.CountAsync(ct);
+            var items = await q.OrderByDescending(a => a.Id).Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(a => new PlatformAuditRow(a.Id, a.UserId, a.Action, a.Entity, a.EntityId, a.Ip, a.CreatedAt)).ToListAsync(ct);
+            return new Page<PlatformAuditRow>(items, total, page, pageSize);
+        });
     }
 
     // --- katalog master (tulis) ----------------------------------------------------------------

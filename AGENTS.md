@@ -21,6 +21,7 @@ Proyek: **Operator AI**, chatbot web dengan AI sebagai operator yang membagi tug
 
 - Stack: .NET 9, ASP.NET Core, Worker Service, EF Core 9 + Dapper, SQL Server, React + Vite + TypeScript.
 - AI chatbot: DeepSeek V4.1 Flash lewat endpoint OpenAI-compatible OpenCode (`https://opencode.ai/inference/openai/v1/`, lihat `DECISIONS.md` Fase 0). Setelah gateway selesai, `Ai:BaseUrl` worker diarahkan ke gateway (API key gateway, bukan key provider). Nama model selalu dari konfigurasi `Ai:Model`.
+- **Pengujian nyata ke AI memakai OpenCode Go, bukan Zen.** Smoke, uji provider, dan benchmark lewat provider gateway dari template `opencode-go` (`https://opencode.ai/inference/go/openai/v1/`). Jangan memakai template/provider `opencode` (`https://opencode.ai/inference/openai/v1/` = Zen, memotong saldo kredit) dan jangan fallback ke Zen saat uji; bila Go gagal atau belum siap, laporkan. Detail: `DECISIONS.md` entri 2026-10-10 "Aturan uji".
 - Tanpa Docker, Firebase, message broker, Redis, atau database lain.
 - Secret hanya lewat `dotnet user-secrets`, tidak pernah di file yang di-commit.
 - Jangan mengerjakan lebih dari satu fase dalam satu sesi kecuali diminta.

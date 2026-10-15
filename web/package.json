@@ -7,12 +7,21 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "check:drafts": "node src/streamDrafts.check.ts",
+    "check:attachments": "node src/attachments.check.ts",
+    "check:markdown": "node src/markdown.check.ts",
+    "check:export": "node src/exportMarkdown.check.ts",
+    "check:thinking": "node src/thinkingModes.check.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "@microsoft/signalr": "^10.0.11",
+    "prism-react-renderer": "^2.4.1",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

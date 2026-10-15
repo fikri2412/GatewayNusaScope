@@ -22,68 +22,6 @@ namespace OperatorAi.Shared.Data.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
-            modelBuilder.Entity("OperatorAi.Shared.Data.AiCall", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasColumnName("id");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<Guid?>("ConversationId")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("conversation_id");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("SYSUTCDATETIME()");
-
-                    b.Property<int>("DurationMs")
-                        .HasColumnType("int")
-                        .HasColumnName("duration_ms");
-
-                    b.Property<string>("Error")
-                        .HasColumnType("nvarchar(max)")
-                        .HasColumnName("error");
-
-                    b.Property<int?>("InputTokens")
-                        .HasColumnType("int")
-                        .HasColumnName("input_tokens");
-
-                    b.Property<string>("Model")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)")
-                        .HasColumnName("model");
-
-                    b.Property<int?>("OutputTokens")
-                        .HasColumnType("int")
-                        .HasColumnName("output_tokens");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)")
-                        .HasColumnName("source");
-
-                    b.Property<string>("StopReason")
-                        .HasMaxLength(30)
-                        .HasColumnType("nvarchar(30)")
-                        .HasColumnName("stop_reason");
-
-                    b.Property<string>("ToolsCalled")
-                        .HasMaxLength(400)
-                        .HasColumnType("nvarchar(400)")
-                        .HasColumnName("tools_called");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("ai_calls", (string)null);
-                });
-
             modelBuilder.Entity("OperatorAi.Shared.Data.Attachment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -151,10 +89,23 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("SYSUTCDATETIME()");
 
+                    b.Property<string>("ModelAlias")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("model_alias");
+
                     b.Property<string>("Title")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("title");
+
+                    b.Property<long>("TokensUsed")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tokens_used");
+
+                    b.Property<bool>("UsageIncomplete")
+                        .HasColumnType("bit")
+                        .HasColumnName("usage_incomplete");
 
                     b.Property<string>("UserId")
                         .IsRequired()
@@ -198,10 +149,20 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("error");
 
+                    b.Property<string>("ExecutionPolicyJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("execution_policy_json");
+
                     b.Property<string>("InputJson")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("input_json");
+
+                    b.Property<bool>("IsPrimary")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_primary");
 
                     b.Property<string>("JobType")
                         .IsRequired()
@@ -212,6 +173,11 @@ namespace OperatorAi.Shared.Data.Migrations
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("datetime2")
                         .HasColumnName("locked_at");
+
+                    b.Property<string>("LockedBy")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("locked_by");
 
                     b.Property<bool>("NotifyOperator")
                         .HasColumnType("bit")
@@ -226,6 +192,10 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("int")
                         .HasDefaultValue(0)
                         .HasColumnName("retry_count");
+
+                    b.Property<long?>("SourceMessageId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("source_message_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -243,7 +213,14 @@ namespace OperatorAi.Shared.Data.Migrations
                     b.HasIndex("Status", "JobType", "Id")
                         .HasDatabaseName("ix_jobs_status_type");
 
-                    b.ToTable("jobs", (string)null);
+                    b.ToTable("jobs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_jobs_execution_policy", "[status] NOT IN ('Pending','Processing') OR ([source_message_id] IS NOT NULL AND [source_message_id] > 0 AND [execution_policy_json] IS NOT NULL AND ISJSON([execution_policy_json]) = 1 AND ISNULL(TRY_CONVERT(int, JSON_VALUE([execution_policy_json], '$.maxRetries')), 0) BETWEEN 1 AND 20 AND ISNULL(TRY_CONVERT(int, JSON_VALUE([execution_policy_json], '$.staleLockMinutes')), 0) BETWEEN 1 AND 1440)");
+
+                            t.HasCheckConstraint("ck_jobs_model_snapshot", "[status] NOT IN ('Pending','Processing') OR (ISJSON([input_json]) = 1 AND JSON_VALUE([input_json], '$.model') IS NOT NULL AND LEN(JSON_VALUE([input_json], '$.model')) BETWEEN 1 AND 100)");
+
+                            t.HasCheckConstraint("ck_jobs_runtime_limits", "[status] NOT IN ('Pending','Processing') OR (ISJSON(JSON_QUERY([execution_policy_json], '$.ai')) = 1 AND ISJSON(JSON_QUERY([execution_policy_json], '$.upload')) = 1 AND ISJSON(JSON_QUERY([execution_policy_json], '$.document')) = 1 AND JSON_VALUE([execution_policy_json], '$.ai.attemptTimeoutSeconds') IS NOT NULL AND JSON_VALUE([execution_policy_json], '$.upload.maxAttachmentsPerMessage') IS NOT NULL AND JSON_VALUE([execution_policy_json], '$.document.watchdogSeconds') IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("OperatorAi.Shared.Data.Message", b =>
@@ -277,9 +254,37 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("SYSUTCDATETIME()");
 
+                    b.Property<string>("FinishReason")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)")
+                        .HasColumnName("finish_reason");
+
+                    b.Property<int?>("FirstTokenMs")
+                        .HasColumnType("int")
+                        .HasColumnName("first_token_ms");
+
+                    b.Property<bool>("IsPrimary")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_primary");
+
                     b.Property<bool>("IsVisible")
                         .HasColumnType("bit")
                         .HasColumnName("is_visible");
+
+                    b.Property<string>("ModelAlias")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("model_alias");
+
+                    b.Property<long?>("QueueItemId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("queue_item_id");
+
+                    b.Property<int?>("QueueWaitMs")
+                        .HasColumnType("int")
+                        .HasColumnName("queue_wait_ms");
 
                     b.Property<string>("Role")
                         .IsRequired()
@@ -287,12 +292,68 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("nvarchar(20)")
                         .HasColumnName("role");
 
+                    b.Property<Guid?>("StreamId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("stream_id");
+
+                    b.Property<int?>("TokensUsed")
+                        .HasColumnType("int")
+                        .HasColumnName("tokens_used");
+
+                    b.Property<int?>("TotalMs")
+                        .HasColumnType("int")
+                        .HasColumnName("total_ms");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ConversationId", "Id")
                         .HasDatabaseName("ix_messages_conversation");
 
                     b.ToTable("messages", (string)null);
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.PasswordResetToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<DateTime?>("UsedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("used_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_password_reset_tokens_token_hash");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("ix_password_reset_tokens_user_id_created_at");
+
+                    b.ToTable("password_reset_tokens", (string)null);
                 });
 
             modelBuilder.Entity("OperatorAi.Shared.Data.QueueItem", b =>
@@ -303,6 +364,11 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnName("id");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ClientRequestId")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("client_request_id");
 
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("datetime2")
@@ -322,9 +388,24 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("error");
 
+                    b.Property<string>("ExecutionPolicyJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("execution_policy_json");
+
+                    b.Property<bool>("IsPrimary")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_primary");
+
                     b.Property<DateTime?>("LockedAt")
                         .HasColumnType("datetime2")
                         .HasColumnName("locked_at");
+
+                    b.Property<string>("LockedBy")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("locked_by");
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
@@ -336,6 +417,10 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("int")
                         .HasDefaultValue(0)
                         .HasColumnName("retry_count");
+
+                    b.Property<long?>("SourceMessageId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("source_message_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -351,12 +436,176 @@ namespace OperatorAi.Shared.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ConversationId");
+                    b.HasIndex("ConversationId", "ClientRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_queue_items_client_request")
+                        .HasFilter("[client_request_id] IS NOT NULL");
+
+                    b.HasIndex("ConversationId", "Status")
+                        .HasDatabaseName("ix_queue_items_conversation");
 
                     b.HasIndex("Status", "Id")
                         .HasDatabaseName("ix_queue_items_status");
 
-                    b.ToTable("queue_items", (string)null);
+                    b.ToTable("queue_items", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_queue_items_execution_policy", "[status] NOT IN ('Pending','Processing') OR ([source_message_id] IS NOT NULL AND [source_message_id] > 0 AND [execution_policy_json] IS NOT NULL AND ISJSON([execution_policy_json]) = 1 AND ISNULL(TRY_CONVERT(int, JSON_VALUE([execution_policy_json], '$.maxRetries')), 0) BETWEEN 1 AND 20 AND ISNULL(TRY_CONVERT(int, JSON_VALUE([execution_policy_json], '$.staleLockMinutes')), 0) BETWEEN 1 AND 1440)");
+
+                            t.HasCheckConstraint("ck_queue_items_model_snapshot", "[status] NOT IN ('Pending','Processing') OR (ISJSON([payload_json]) = 1 AND JSON_VALUE([payload_json], '$.model') IS NOT NULL AND LEN(JSON_VALUE([payload_json], '$.model')) BETWEEN 1 AND 100)");
+
+                            t.HasCheckConstraint("ck_queue_items_runtime_limits", "[status] NOT IN ('Pending','Processing') OR (ISJSON(JSON_QUERY([execution_policy_json], '$.ai')) = 1 AND ISJSON(JSON_QUERY([execution_policy_json], '$.upload')) = 1 AND ISJSON(JSON_QUERY([execution_policy_json], '$.document')) = 1 AND JSON_VALUE([execution_policy_json], '$.ai.attemptTimeoutSeconds') IS NOT NULL AND JSON_VALUE([execution_policy_json], '$.upload.maxAttachmentsPerMessage') IS NOT NULL AND JSON_VALUE([execution_policy_json], '$.document.watchdogSeconds') IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refresh_tokens_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_refresh_tokens_user_id");
+
+                    b.ToTable("refresh_tokens", (string)null);
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.SavedAnswer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("content");
+
+                    b.Property<Guid?>("ConversationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("conversation_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<long?>("MessageId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("message_id");
+
+                    b.Property<string>("ModelAlias")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("model_alias");
+
+                    b.Property<string>("SessionTitle")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("session_title");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("ix_saved_answers_user_created");
+
+                    b.HasIndex("UserId", "MessageId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_saved_answers_user_message")
+                        .HasFilter("[message_id] IS NOT NULL");
+
+                    b.ToTable("saved_answers", (string)null);
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.User", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(254)
+                        .HasColumnType("nvarchar(254)")
+                        .HasColumnName("email");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("password_hash");
+
+                    b.Property<Guid>("SecurityStamp")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("security_stamp")
+                        .HasDefaultValueSql("NEWID()");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("username");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Email")
+                        .IsUnique()
+                        .HasDatabaseName("ux_users_email")
+                        .HasFilter("[email] IS NOT NULL");
+
+                    b.HasIndex("Username")
+                        .IsUnique()
+                        .HasDatabaseName("ux_users_username");
+
+                    b.ToTable("users", (string)null);
                 });
 
             modelBuilder.Entity("OperatorAi.Shared.Data.Attachment", b =>
@@ -391,11 +640,29 @@ namespace OperatorAi.Shared.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("OperatorAi.Shared.Data.PasswordResetToken", b =>
+                {
+                    b.HasOne("OperatorAi.Shared.Data.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("OperatorAi.Shared.Data.QueueItem", b =>
                 {
                     b.HasOne("OperatorAi.Shared.Data.Conversation", null)
                         .WithMany()
                         .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.RefreshToken", b =>
+                {
+                    b.HasOne("OperatorAi.Shared.Data.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
                 });

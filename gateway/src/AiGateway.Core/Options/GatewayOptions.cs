@@ -15,6 +15,10 @@ using AiGateway.Core.Provisioning;
 using AiGateway.Core.Proxy;
 using AiGateway.Core.Security;
 using AiGateway.Core.Maintenance;
+using AiGateway.Core.Settings;
+using AiGateway.Core.AppStatus;
+using AiGateway.Core.WebSearch;
+using Polly;
 
 namespace AiGateway.Core.Options;
 
@@ -37,10 +41,11 @@ public sealed class ProxyOptions
 {
     public const string Section = "Proxy";
     [Range(1024, 64 * 1024 * 1024)] public int MaxRequestBytes { get; set; } = 4 * 1024 * 1024;
+    /// <summary>Deadline satu route sampai headers/body REST atau event SSE pertama; sesudah commit SSE menjadi batas idle.</summary>
     [Range(1, 600)] public int UpstreamTimeoutSeconds { get; set; } = 120;
     /// <summary>
-    /// Batas durasi total satu stream SSE. Batas diam antar baris memakai <see cref="UpstreamTimeoutSeconds"/>; batas
-    /// total mencegah upstream yang mengirim sepotong demi sepotong menahan koneksi dan slot tenant tanpa akhir.
+    /// Batas durasi total pompa SSE, termasuk read, write, flush dan error terminal. Idle antar baris memakai
+    /// <see cref="UpstreamTimeoutSeconds"/>; deadline total juga menghentikan downstream yang macet.
     /// </summary>
     [Range(1, 86400)] public int MaxStreamSeconds { get; set; } = 900;
     /// <summary>Batas body respons upstream (provider milik tenant tidak dipercaya; tanpa batas, satu tenant bisa menghabiskan memori proses).</summary>
@@ -78,6 +83,8 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<TenantSessionInterceptor>();
         services.AddDbContext<GatewayDbContext>((sp, o) => o.UseGatewaySqlServer(cs)
             .AddInterceptors(sp.GetRequiredService<TenantSessionInterceptor>()));
+        // Koneksi principal gateway_platform untuk laporan lintas tenant dan audit tanpa tenant (lihat PlatformDb).
+        services.AddSingleton(new PlatformDb(config.GetConnectionString("GatewayPlatform")));
 
         services.AddOptions<DatabaseOptions>().Bind(config.GetSection(DatabaseOptions.Section)).ValidateOnStart();
         services.AddOptions<SeedOptions>().Bind(config.GetSection(SeedOptions.Section))
@@ -119,7 +126,30 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<CurrentActor>();
         services.AddScoped<AuditWriter>();
         services.AddScoped<UsageReports>();
+        services.AddScoped<AppSettingsService>();
+        services.AddScoped<AppStatusService>();
         services.AddScoped<PublicIdResolver>();
+        services.AddOptions<WebSearchOptions>().Bind(config.GetSection(WebSearchOptions.Section))
+            .ValidateDataAnnotations()
+            .Validate(o => o.ProbeLeaseSeconds >= o.ProviderTimeoutSeconds + 5,
+                "WebSearch:ProbeLeaseSeconds wajib lebih panjang dari ProviderTimeoutSeconds minimal 5 detik.")
+            .Validate(o => o.Providers.Length == 0 || !string.IsNullOrWhiteSpace(o.SeedTenantSlug),
+                "WebSearch:SeedTenantSlug wajib diisi bila Providers dikonfigurasi.")
+            .ValidateOnStart();
+        foreach (var type in SearchProviderTypes.All)
+            services.AddHttpClient("SearchProvider." + type, client => client.Timeout = Timeout.InfiniteTimeSpan)
+                .RemoveAllLoggers()
+                .ConfigurePrimaryHttpMessageHandler(OutboundSecurity.CreateHandler)
+                .AddResilienceHandler("search-deadline", (pipeline, context) =>
+                    pipeline.AddTimeout(TimeSpan.FromSeconds(
+                        context.ServiceProvider.GetRequiredService<IOptions<WebSearchOptions>>().Value.ProviderTimeoutSeconds)));
+        foreach (var adapterType in typeof(ISearchProvider).Assembly.GetTypes()
+            .Where(type => type.IsClass && !type.IsAbstract && !type.ContainsGenericParameters
+                && typeof(ISearchProvider).IsAssignableFrom(type)))
+            services.AddSingleton(typeof(ISearchProvider), adapterType);
+        services.TryAddSingleton<IRandomProvider, DefaultRandomProvider>();
+        services.AddScoped<WebSearchHub>();
+        services.AddScoped<SearchProviderRegistry>();
         return services;
     }
 }
