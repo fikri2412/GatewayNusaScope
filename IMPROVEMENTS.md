@@ -386,6 +386,7 @@ Reuse namespace `chatbot`, tabel `app_settings`, halaman Pengaturan, audit, role
 | `Queue:StaleLockMinutes` | 10 | Integer 1–1440; ambang lock tanpa heartbeat yang sah, bukan batas waktu total pekerjaan |
 | `Ai:MaxTokens` | 4096 | Integer 1–64000 sesuai validator; budget output satu panggilan, masih dapat diperkecil gateway/provider |
 | `Response:Detail` | `mendalam` | Enum text `ringkas`, `normal`, `mendalam`; mengikuti permintaan eksplisit user untuk jawaban singkat |
+| `Operator:FileTools` | `auto` | Enum text `auto`, `selalu`; `auto` menyembunyikan tool + instruksi file dari percakapan tanpa lampiran upload |
 | `Prompt:AdditionalInstructions` | Kosong | Text maksimal 2000 karakter; tambahan bisnis/gaya admin, bukan pengganti aturan inti atau tempat secret |
 
 Baseline lokal dicapture sekali; nilai worker berasal snapshot baris, bukan opsi proses saat ini. 8192 sudah dicoba sebagai override valid pada smoke settings; default output tetap 4096. Gateway/model dapat memperkecilnya dan reasoning dapat memakai budget; tidak menjanjikan panjang tertentu. Jangan menaikkan tool loops/history untuk memperpanjang penjelasan.

@@ -114,6 +114,8 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null)
+  /** Teks yang disorot di mode Pratinjau/Sorotan (hasil render, bukan textarea), diambil dari seleksi browser. */
+  const [viewText, setViewText] = useState('')
   const [asking, setAsking] = useState<SelectionAction | null>(null)
   const [question, setQuestion] = useState('')
   const [aiNote, setAiNote] = useState<string | null>(null)
@@ -252,7 +254,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
     })
 
   const selectionActions = SELECTION_ACTIONS[summary.kind] ?? []
-  const selectedText = selection && selection.end > selection.start ? draft.slice(selection.start, selection.end) : ''
+  const selectedText = mode !== 'edit' ? viewText : selection && selection.end > selection.start ? draft.slice(selection.start, selection.end) : ''
 
   const askAi = async (action: SelectionAction) => {
     if (!loaded || selectedText === '') return
@@ -270,6 +272,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
       setAsking(null)
       setQuestion('')
       setSelection(null)
+      setViewText('')
     } catch (e: unknown) {
       setError(errorMessage(e))
     } finally {
@@ -364,7 +367,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
               {viewTabs.length > 0 && (
                 <div className="canvas-seg" role="tablist" aria-label="Tampilan artifact">
                   {viewTabs.map((t) => (
-                    <button key={t.key} type="button" role="tab" aria-selected={mode === t.key} disabled={viewing !== null} onClick={() => setMode(t.key)}>{t.label}</button>
+                    <button key={t.key} type="button" role="tab" aria-selected={mode === t.key} disabled={viewing !== null} onClick={() => { setViewText(''); setMode(t.key) }}>{t.label}</button>
                   ))}
                 </div>
               )}
@@ -378,7 +381,7 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
           )}
 
           {error && <p className="error canvas-note" role="alert">{error}</p>}
-          {selectionActions.length > 0 && mode === 'edit' && viewing === null && selectedText !== '' && (
+          {selectionActions.length > 0 && (mode === 'edit' || mode === 'view') && viewing === null && selectedText !== '' && (
             <div className="canvas-ai-bar" role="group" aria-label="Aksi AI untuk teks terpilih">
               <span className="canvas-ai-tag"><span aria-hidden="true">✦</span> AI</span>
               <span className="canvas-ai-info">Terpilih {selectedText.length.toLocaleString('id-ID')} karakter</span>
@@ -448,7 +451,11 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
             </div>
           )}
 
-          <div className={isDoc ? 'canvas-content is-paper' : isCode ? 'canvas-content is-code' : 'canvas-content'}>
+          <div
+            className={isDoc ? 'canvas-content is-paper' : isCode ? 'canvas-content is-code' : 'canvas-content'}
+            onMouseUp={() => { if (mode === 'view' && !viewing) setViewText(window.getSelection()?.toString().trim() ?? '') }}
+            onKeyUp={() => { if (mode === 'view' && !viewing) setViewText(window.getSelection()?.toString().trim() ?? '') }}
+          >
             {isSheet ? (
               <SpreadsheetView key={viewing ? `v${viewing.version}` : `c${sheetKey}`} value={viewing?.content ?? draft} readOnly={viewing !== null} title={titleDraft} onChange={setDraft} />
             ) : isHtml && mode === 'preview' && !viewing ? (

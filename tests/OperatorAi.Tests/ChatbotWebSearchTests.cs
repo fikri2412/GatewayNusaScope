@@ -340,6 +340,19 @@ public class ChatbotToolDispatcherTests : QueueTestBase
     }
 
     [Fact]
+    public async Task Cari_web_provides_ready_markdown_source_links()
+    {
+        await using var db = NewContext();
+        var search = new MockWebSearch(new WebSearchResult("mock_provider",
+            [new WebSearchResultItem("Judul [satu]", "https://x.test/a_(b)", "s")]));
+
+        var result = await ToolDispatcher.ExecuteAsync(Context(db, search), ToolDefinitions.CariWeb, "{\"kueri\":\"x\"}", CancellationToken.None);
+
+        Assert.Contains("- [Judul (satu)](https://x.test/a_%28b%29)", result.Text);
+        Assert.DoesNotContain("URL:", result.Text);
+    }
+
+    [Fact]
     public async Task Cari_web_clips_long_title_and_snippet()
     {
         await using var db = NewContext();

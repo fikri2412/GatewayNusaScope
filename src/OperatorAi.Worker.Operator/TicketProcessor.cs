@@ -94,8 +94,10 @@ public sealed class TicketProcessor(
             return;
         }
 
-        var system = PromptPolicy.Compose(OperatorPrompt.RoleInstructions, policy, turn.TrustedContext);
-        var tools = ToolDefinitions.All();
+        // Tool + instruksi file hanya ikut bila percakapan punya lampiran upload (atau mode "selalu"); dihitung sekali per tiket.
+        var fileTools = await FileToolsAsync(item.ConversationId, policy, ct);
+        var system = PromptPolicy.Compose(OperatorPrompt.For(fileTools), policy, turn.TrustedContext);
+        var tools = ToolDefinitions.For(fileTools);
 
         for (var loop = 0; ; loop++)
         {
@@ -183,6 +185,14 @@ public sealed class TicketProcessor(
     {
         await using var db = new AppDbContext(dbOptions);
         return await db.TokensUsedAsync(conversationId, ct);
+    }
+
+    private async Task<bool> FileToolsAsync(Guid conversationId, ExecutionPolicy policy, CancellationToken ct)
+    {
+        if (policy.FileTools == FileToolModes.Always) return true;
+        await using var db = new AppDbContext(dbOptions);
+        return await db.Attachments.AsNoTracking()
+            .AnyAsync(a => a.ConversationId == conversationId && a.Kind == AttachmentKinds.Upload, ct);
     }
 
     /// <summary>Tanpa token pembatalan: panggilan AI sudah terjadi dan tokennya terpakai walau worker dihentikan sesudahnya.</summary>

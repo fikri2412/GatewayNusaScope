@@ -60,6 +60,16 @@ public sealed class OperatorOptions
     [Range(1, 500)] public int MaxHistoryMessages { get; set; }
     /// <summary>Batas lunak total token (prompt + completion, semua panggilan AI) per percakapan; lewat itu operator menjawab pesan batas tanpa memanggil AI.</summary>
     [Range(1000, int.MaxValue)] public int MaxTokensPerConversation { get; set; }
+    /// <summary>
+    /// <c>auto</c> (default): tool analisis file/dokumen/PDF dan instruksinya baru dikirim ke model bila percakapan punya
+    /// lampiran upload, supaya model tidak menyebut Excel/PDF tanpa konteks. <c>selalu</c>: selalu dikirim.
+    /// </summary>
+    [AllowedValues(FileToolModes.Auto, FileToolModes.Always)] public string FileTools { get; set; } = FileToolModes.Auto;
+}
+
+public static class FileToolModes
+{
+    public const string Auto = "auto", Always = "selalu";
 }
 
 /// <summary>Hanya dipakai API (bagian 6.1); dibaca lewat IOptionsMonitor. Worker tidak mendaftarkannya.</summary>

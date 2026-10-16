@@ -58,7 +58,8 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
     private sealed record Controls(int MaxToolLoops, int MaxHistoryMessages, int MaxTokensPerConversation, int MaxRetries,
         int StaleLockMinutes, int? MaxOutputTokens, string Detail, int MaxConcurrentOperators,
         int MaxConcurrentSpecialists, int SweepSeconds, string OperatorDll, string SpecialistDll,
-        string AdditionalInstructions, AiRuntimeLimits Ai, UploadRuntimeLimits Upload, DocumentRuntimeLimits Document);
+        string AdditionalInstructions, AiRuntimeLimits Ai, UploadRuntimeLimits Upload, DocumentRuntimeLimits Document,
+        string FileTools);
 
     /// <summary>Seluruh status dibawa satu referensi immutable supaya pembaca tidak pernah melihat state campuran.</summary>
     private sealed record State(Controls Controls, ExecutionPolicy Policy, string SyncStatus,
@@ -80,6 +81,7 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
         new("Queue:StaleLockMinutes", "int", 1, 1440),
         new("Ai:MaxTokens", "int", 1, 64000),
         new("Response:Detail", "text", AllowedValues: ["ringkas", "normal", "mendalam"]),
+        new("Operator:FileTools", "text", AllowedValues: [FileToolModes.Auto, FileToolModes.Always]),
         new("Dispatcher:MaxConcurrentOperators", "int", 1, 32),
         new("Dispatcher:MaxConcurrentSpecialists", "int", 1, 16),
         new("Dispatcher:SweepSeconds", "int", 1, 300),
@@ -319,6 +321,7 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
             MaxToolLoops = controls.MaxToolLoops,
             MaxHistoryMessages = controls.MaxHistoryMessages,
             MaxTokensPerConversation = controls.MaxTokensPerConversation,
+            FileTools = controls.FileTools,
         },
         new QueueOptions { MaxRetries = controls.MaxRetries, StaleLockMinutes = controls.StaleLockMinutes },
         new AiOptions
@@ -356,6 +359,12 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
         if (!TryCanonicalValue(detail, detail.ValueType, detailText, out var canonicalDetail))
             throw new InvalidOperationException("Konfigurasi lokal Response:Detail wajib ringkas, normal, atau mendalam.");
 
+        var fileTools = AppliedControls.First(c => c.Key == "Operator:FileTools");
+        var fileToolsText = local["Operator:FileTools"];
+        if (string.IsNullOrEmpty(fileToolsText)) fileToolsText = FileToolModes.Auto;
+        if (!TryCanonicalValue(fileTools, fileTools.ValueType, fileToolsText, out var canonicalFileTools))
+            throw new InvalidOperationException("Konfigurasi lokal Operator:FileTools wajib auto atau selalu.");
+
         return new Controls(
             Read("Operator:MaxToolLoops"), Read("Operator:MaxHistoryMessages"),
             Read("Operator:MaxTokensPerConversation"), Read("Queue:MaxRetries"), Read("Queue:StaleLockMinutes"),
@@ -365,7 +374,8 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
             local["Prompt:AdditionalInstructions"] ?? "",
             AiRuntimeLimits.FromOptions(local.GetSection(AiOptions.Section).Get<AiOptions>() ?? new AiOptions()),
             UploadRuntimeLimits.FromOptions(local.GetSection(UploadOptions.Section).Get<UploadOptions>() ?? new UploadOptions()),
-            DocumentRuntimeLimits.FromOptions(local.GetSection(DocumentOptions.Section).Get<DocumentOptions>() ?? new DocumentOptions()));
+            DocumentRuntimeLimits.FromOptions(local.GetSection(DocumentOptions.Section).Get<DocumentOptions>() ?? new DocumentOptions()),
+            canonicalFileTools);
     }
 
     private static bool TryCanonicalValue(Control control, string valueType, string value, out string canonical)
@@ -413,6 +423,7 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
         "Queue:StaleLockMinutes" => controls with { StaleLockMinutes = int.Parse(value, CultureInfo.InvariantCulture) },
         "Ai:MaxTokens" => controls with { MaxOutputTokens = int.Parse(value, CultureInfo.InvariantCulture) },
         "Response:Detail" => controls with { Detail = value },
+        "Operator:FileTools" => controls with { FileTools = value },
         "Dispatcher:MaxConcurrentOperators" => controls with { MaxConcurrentOperators = int.Parse(value, CultureInfo.InvariantCulture) },
         "Dispatcher:MaxConcurrentSpecialists" => controls with { MaxConcurrentSpecialists = int.Parse(value, CultureInfo.InvariantCulture) },
         "Dispatcher:SweepSeconds" => controls with { SweepSeconds = int.Parse(value, CultureInfo.InvariantCulture) },
@@ -452,6 +463,7 @@ public sealed class GatewaySettingsProvider : ConfigurationProvider, IConfigurat
             ["Queue:MaxRetries"] = controls.MaxRetries.ToString(CultureInfo.InvariantCulture),
             ["Queue:StaleLockMinutes"] = controls.StaleLockMinutes.ToString(CultureInfo.InvariantCulture),
             ["Response:Detail"] = controls.Detail,
+            ["Operator:FileTools"] = controls.FileTools,
             ["Dispatcher:MaxConcurrentOperators"] = controls.MaxConcurrentOperators.ToString(CultureInfo.InvariantCulture),
             ["Dispatcher:MaxConcurrentSpecialists"] = controls.MaxConcurrentSpecialists.ToString(CultureInfo.InvariantCulture),
             ["Dispatcher:SweepSeconds"] = controls.SweepSeconds.ToString(CultureInfo.InvariantCulture),

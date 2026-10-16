@@ -149,4 +149,18 @@ public static class ToolDefinitions
           }
         ]
         """)!;
+
+    /// <summary>Tool yang hanya berguna bila ada file/hasil analisis; di mode <c>auto</c> disembunyikan dari percakapan tanpa lampiran.</summary>
+    private static readonly HashSet<string> FileToolNames = [AnalisisFile, AnalisisDokumen, BuatLaporanPdf];
+
+    public static JsonArray For(bool fileTools)
+    {
+        var all = All();
+        if (fileTools) return all;
+        var kept = new JsonArray();
+        foreach (var tool in all.ToList())
+            if (!FileToolNames.Contains((string)tool!["function"]!["name"]!))
+                kept.Add(tool.DeepClone());
+        return kept;
+    }
 }

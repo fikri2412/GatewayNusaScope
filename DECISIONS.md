@@ -1095,3 +1095,29 @@ Keluhan: di layar percakapan kolom "Balas…" berada sebaris dengan model, lampi
 - **Kolom balas kini `textarea`** (sebelumnya `input` satu baris): tumbuh sampai ±8 baris (maks 200 px) lalu menggulir, kembali satu baris saat dikosongkan. Enter mengirim, **Shift+Enter** baris baru, Enter saat memilih kandidat IME tidak mengirim. `aria-label="Tulis balasan"`, placeholder tetap "Balas...".
 - **Tidak berubah:** layar Home (komposer besar), logika kirim/lampiran/batas panjang.
 - **Verifikasi:** `tsc`, lint, build bersih; e2e Chromium 123/123 dengan tiga uji baru (kolom selebar kartu dan di atas bilah alat, tumbuh untuk 4 baris, kembali satu baris).
+
+## 2026-10-16 — Sumber pencarian web sebagai tautan berjudul
+
+Keluhan: jawaban `cari_web` menampilkan "Sumber:" berupa `[1] https://...` mentah.
+
+- **Akar:** `OperatorPrompt` meminta "sitasi nomor atau URL sumber" dan melarang markdown di chat. Renderer `web/src/markdown.ts` sudah mendukung tautan (aman, `target=_blank`).
+- **Perubahan (prompt saja):** jawaban ditutup "Sumber:" + daftar berpoin `- [judul deskriptif](url)`, tanpa URL mentah/nomor, hanya URL dari hasil pencarian; larangan markdown dikecualikan untuk daftar ini. Tanpa perubahan web/backend.
+- **Tindak lanjut (prompt saja tidak cukup):** model masih menulis `[1] https://...` karena hasil tool `cari_web` (`ToolDispatcher.CariWebAsync`) sendiri bernomor `[n]`, berlabel `URL:`, dan menyuruh "sertakan tautan sumber atau nomor rujukan". Kini hasil tool memuat daftar siap salin `- [judul](url)` (kurung judul/URL di-escape) dan menyuruh model menyalinnya persis di bawah "Sumber:"; label `URL:` dan penomoran dihapus.
+- **Batas:** model tetap bisa menyimpang, tetapi instruksi tool dan prompt kini searah; jawaban lama tidak berubah. Perlu restart worker/API yang sedang berjalan (DLL terkunci saat build).
+- **Verifikasi:** `dotnet build` worker Operator 0 warning/0 error; test baru `Cari_web_provides_ready_markdown_source_links`; `ChatbotToolDispatcherTests` 8/8 lulus.
+
+## 2026-10-16 — Daftar model di composer terpotong; toolbar AI Canvas juga di Pratinjau
+
+- **Model picker:** klik "DeepSeek" di bilah balas tidak menampilkan daftar. Akar (direproduksi di Chromium): `.ns-chat-tools` memakai `overflow-x: auto` (dari perubahan bilah satu baris), yang membuat overflow-y ikut `auto` sehingga popover `position: absolute` yang membuka ke atas terpotong. Perbaikan: hapus overflow, ganti `flex-wrap: wrap` (`Composer.css`). Di panel sempit (chat + Canvas) tombol mode Cepat/Mikir dalam kini turun ke baris kedua, bukan digulir.
+- **Toolbar AI Canvas:** keluhan "sulit muncul" karena dokumen buatan AI terbuka di Pratinjau/Sorotan sedangkan bar hanya ada di tab Edit. Kini bar juga muncul saat teks disorot di tab Pratinjau/Sorotan (seleksi browser, `CanvasPanel.tsx`). Bar bukan tooltip melayang; ia strip di atas konten dan menggeser konten ke bawah.
+- **Verifikasi:** Chromium nyata (user uji sementara, percakapan dihapus lewat API): popover 33 opsi tampil penuh; bar AI muncul untuk seleksi keyboard di Edit dan seleksi mouse di Sorotan. `tsc`/`oxlint` bersih. Akun `smoke953522` tersisa di DB dev (tak ada endpoint hapus akun).
+
+## 2026-10-16 — Tool dan instruksi file hanya bila ada lampiran; bisa diatur dari gateway
+
+Keluhan: AI terus menyebut/menawarkan Excel dan PDF di chat biasa. Akar: `OperatorPrompt` berperan "asisten analisis data", instruksi file selalu ada, dan ketiga tool file (`analisis_file`, `analisis_dokumen`, `buat_laporan_pdf`) dikirim di setiap giliran.
+
+- **Perubahan:** `OperatorPrompt` dipecah jadi `RoleInstructions` (umum, kini "asisten serbaguna" + larangan menyebut Excel/CSV/PDF tanpa lampiran/permintaan) dan `FileInstructions`; `OperatorPrompt.For(bool)` dan `ToolDefinitions.For(bool)` memilihnya. `TicketProcessor` memutuskan sekali per tiket: ada lampiran `Upload` di percakapan, atau mode `selalu`.
+- **Pengaturan gateway:** key baru `Operator:FileTools` (`auto` default | `selalu`), namespace `chatbot`, jalur yang sama dengan kontrol lain (`GatewaySettingsProvider` → `ExecutionPolicy.FileTools`, snapshot per tiket, laporan status, katalog `AppStatusService`). Teks peran tetap bisa disesuaikan lewat `Prompt:AdditionalInstructions`.
+- **Kompatibilitas snapshot:** `FileTools` tidak `JsonRequired` dan hanya masuk hash bila bukan `auto`, jadi tiket/job lama di antrean tetap sah (tanpa cutover). `PromptHash` (`CoreInstructions`) tidak berubah.
+- **Urutan rollout:** deploy gateway lebih dulu (katalog status menolak key yang tidak dikenal di `effectiveValues`), baru chatbot.
+- **Batas:** `auto` memakai lampiran apa pun di percakapan itu; setelah user pernah melampirkan file, tool file tetap ditawarkan di giliran berikutnya.
