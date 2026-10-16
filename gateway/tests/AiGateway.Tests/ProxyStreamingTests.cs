@@ -501,19 +501,56 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal((UsageStatuses.Error, upstreamStatus, expectedStatus), (log.Status, log.UpstreamStatus, log.HttpStatus));
     }
 
+    // GA-07: kontrak lama (upstream yang mengabaikan stream:true diturunkan diam-diam jadi respons REST) diganti:
+    // klien yang meminta SSE tidak boleh menerima JSON sukses.
+    [Theory]
+    [InlineData("application/json")]
+    [InlineData("application/x-ndjson")]
+    public async Task Upstream_answering_a_stream_request_with_a_non_event_stream_is_a_protocol_mismatch(string mediaType)
+    {
+        var s = await SetupAsync(alias: Alias);
+        Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(FakeUpstream.OkBody, Encoding.UTF8, mediaType) };
+
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("upstream_protocol_mismatch", ErrorCode(JsonNode.Parse(body)!));
+        Assert.DoesNotContain("chatcmpl-1", body); // isi jawaban upstream tidak bocor ke klien
+        var log = await LogAsync(s.TenantId);
+        Assert.Equal((UsageStatuses.Error, 200, 502, 0), (log.Status, log.UpstreamStatus, log.HttpStatus, log.InputTokens));
+    }
+
     [Fact]
-    public async Task Upstream_that_ignores_stream_returns_buffered_json()
+    public async Task Protocol_mismatch_before_commit_falls_back_to_the_next_route()
+    {
+        var s = await SetupAsync(alias: Alias);
+        await AddSecondRouteAsync(s);
+        Upstream.Respond = c => c.Uri.Host == "up1.test"
+            ? FakeUpstream.Json(200, FakeUpstream.OkBody) // up1 mengabaikan stream:true
+            : CompletedSse(Sse(Delta("c9", "fallback"), Finish("c10"), "[DONE]"));
+
+        var (response, reader) = await StartStreamAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var events = await DrainAsync(reader);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("fallback", ChunkContent(events[0].Json));
+        var log = await LogAsync(s.TenantId);
+        Assert.Equal((UsageStatuses.Ok, 2, true), (log.Status, log.Attempts, log.FallbackUsed));
+    }
+
+    [Fact]
+    public async Task A_json_answer_to_a_request_that_did_not_ask_for_a_stream_is_still_returned()
     {
         var s = await SetupAsync(alias: Alias);
         Upstream.Respond = _ => FakeUpstream.Json(200, FakeUpstream.OkBody);
 
-        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ""));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal(Alias, (string?)(await BodyAsync(response))["model"]);
-        var log = await LogAsync(s.TenantId);
-        Assert.Equal((UsageStatuses.Ok, 10, 20, 0.00005m), (log.Status, log.InputTokens, log.OutputTokens, log.Cost));
     }
 
     // --- kegagalan setelah commit -----------------------------------------------------------

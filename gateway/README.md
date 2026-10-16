@@ -250,7 +250,8 @@ curl -N -s -X POST "$BASE/v1/chat/completions" \
 | Minta usage ke upstream | Gateway **selalu** mengirim `stream_options.include_usage = true`; penagihan butuh chunk usage terakhir |
 | Sembunyikan chunk usage | Chunk usage-saja (`choices: []`) hanya diteruskan bila **klien** mengirim `stream_options.include_usage: true`; bila tidak, `usage` juga dihapus dari chunk biasa |
 | Baris lain | `: comment`, `event:`, `id:`, `retry:` dan `data:` non-JSON diteruskan apa adanya; `data: [DONE]` menutup stream (ditambahkan gateway bila upstream menutup tanpa mengirimnya tetapi `finish_reason` sudah terlihat) |
-| Fallback | Hanya **sebelum** event pertama terkirim: stream kosong atau event pertama berisi `error` → route berikutnya dicoba; setelah itu tidak ada fallback |
+| Fallback | Hanya **sebelum** event pertama terkirim: stream kosong, event pertama berisi `error`, atau upstream menjawab sukses dengan **bukan** `text/event-stream` (mis. JSON karena `stream:true` diabaikan → `upstream_protocol_mismatch`) → route berikutnya dicoba; setelah itu tidak ada fallback. Klien yang meminta SSE tidak pernah menerima JSON sukses diam-diam |
+| Family route | Route yang katalog template-nya berfamily tidak didukung (`google_generate`) tidak dikirim ke provider: dilewati (log + fallback ke route lain); bila tak ada route lain → `502 unsupported_upstream_family` (`denied_reason` sama). `/v1/models` melaporkan `readiness.available=false` untuk model yang hanya punya route seperti itu. Provider custom tanpa template tetap diteruskan sebagai Chat Completions |
 | Error upstream | Payload `error` setelah commit diteruskan sekali lalu stream ditutup; `[DONE]` berikutnya tidak diteruskan atau mengubah status menjadi sukses |
 | Konkurensi | Slot `Proxy:MaxConcurrentPerTenant` ditahan selama stream berjalan dan dilepas saat stream berakhir (termasuk klien putus) |
 
