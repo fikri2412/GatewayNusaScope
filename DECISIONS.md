@@ -1086,3 +1086,12 @@ Permintaan: tombol "Canvas (n)" jangan selalu tampil di atas; mode Canvas mengik
 - **Tetap bisa dijangkau tanpa tombol:** artifact yang tidak punya kartu di chat (buatan sendiri, atau milik jawaban alternatif) dimunculkan sebagai kartu di akhir daftar pesan, jadi menutup Canvas tidak membuat artifact hilang dari jangkauan.
 - **Konsekuensi:** percakapan tanpa artifact tidak punya jalan manual membuka Canvas kosong; artifact pertama datang dari AI (sesuai aturan `OperatorPrompt`: hanya untuk isi panjang/terstruktur). Menu `+` untuk membuat artifact sendiri tetap ada setelah Canvas terbuka. Bila ingin pintu manual lagi, tempat yang cocok adalah menu lampiran di composer, bukan header.
 - **Verifikasi:** `tsc`, lint, `npm run build` bersih; e2e Canvas (Chromium + API tiruan) 120/120, termasuk: header tanpa tombol Canvas, Canvas tertutup saat riwayat dimuat, terbuka otomatis saat AI membuat gambar, artifact buatan sendiri dibuka lagi lewat kartu dengan draf utuh.
+
+## 2026-10-16 — Kolom balas chat: satu baris sendiri dan tumbuh mengikuti isi
+
+Keluhan: di layar percakapan kolom "Balas…" berada sebaris dengan model, lampiran, kamera, pencarian web, mode berpikir, dan tombol kirim, sehingga sempit.
+
+- **Tata letak:** satu kartu, dua baris. Baris atas: kolom balas selebar kartu + tombol kirim. Baris bawah: model, lampiran, tangkap, pencarian web, mode berpikir. Sebelumnya susunan ini hanya berlaku di layar ≤640 px; kini di semua lebar (hanya CSS `order`, markup bilah alat tidak berubah).
+- **Kolom balas kini `textarea`** (sebelumnya `input` satu baris): tumbuh sampai ±8 baris (maks 200 px) lalu menggulir, kembali satu baris saat dikosongkan. Enter mengirim, **Shift+Enter** baris baru, Enter saat memilih kandidat IME tidak mengirim. `aria-label="Tulis balasan"`, placeholder tetap "Balas...".
+- **Tidak berubah:** layar Home (komposer besar), logika kirim/lampiran/batas panjang.
+- **Verifikasi:** `tsc`, lint, build bersih; e2e Chromium 123/123 dengan tiga uji baru (kolom selebar kartu dan di atas bilah alat, tumbuh untuk 4 baris, kembali satu baris).

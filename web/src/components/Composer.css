@@ -59,43 +59,31 @@
 /* ---------- Bilah Chat Percakapan ---------- */
 .ns-chat-bar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   width: 100%;
   box-sizing: border-box;
 }
+/* Baris 1: kolom balas selebar kartu (+ tombol kirim). Baris 2: model, lampiran, pencarian, mode berpikir. */
+.ns-chat-input-wrap {
+  order: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.ns-chat-input { min-height: 40px; max-height: 200px; box-sizing: border-box; overflow-y: auto; }
 .ns-chat-tools {
+  order: 2;
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: none;
   min-width: 0;
-}
-.ns-chat-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-@media (max-width: 640px) {
-  .ns-chat-bar {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  .ns-chat-input-wrap {
-    order: 1;
-    width: 100%;
-  }
-  .ns-chat-tools {
-    order: 2;
-    width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-    padding-bottom: 2px;
-  }
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
 }
 
 /* Overlay seret: pointer-events none supaya drop tetap diterima kartu di bawahnya. */
