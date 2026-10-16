@@ -278,9 +278,28 @@ Pencatatan pemakaian:
   `{"streamed":true,"content":"<teks jawaban>",...}` (teks dibatasi 100.000 karakter); pada klien putus di tengah
   stream, isinya adalah teks parsial yang sudah diterima.
 
-Catatan reverse proxy: `X-Accel-Buffering: no` sudah dikirim agar nginx tidak menahan event; proxy lain (IIS/ARR, dan lain-lain)
-harus mematikan response buffering/kompresi untuk SSE, dan timeout baca proxy harus lebih besar dari
+Catatan reverse proxy: gateway sendiri sudah mematikan buffering server (`DisableBuffering` sebelum header dikirim) dan
+mengirim `X-Accel-Buffering: no` agar nginx tidak menahan event; aplikasi tidak memasang kompresi respons. Proxy di depannya
+tetap harus mematikan response buffering/kompresi untuk SSE, dan timeout baca proxy harus lebih besar dari
 `Proxy:UpstreamTimeoutSeconds` (jeda antar baris) dan `Proxy:MaxStreamSeconds` (durasi total).
+
+Pengaturan proxy berikut **belum diverifikasi** di lingkungan nyata (nama direktif perlu dicek terhadap versi proxy yang dipakai):
+
+- nginx: `proxy_buffering off;` `gzip off;` (di location gateway) dan `proxy_read_timeout` lebih besar dari `Proxy:MaxStreamSeconds`.
+- IIS + ARR: *Server Proxy Settings → Response buffer threshold = 0 KB*, nonaktifkan *dynamic compression* untuk `text/event-stream`, dan naikkan *Time-out* ARR.
+- Azure Front Door / API Management / CDN lain: pastikan respons `text/event-stream` tidak di-cache atau di-buffer menurut dokumentasi layanan tersebut.
+
+Uji nyata di belakang proxy yang benar-benar dipakai (bukan `localhost` langsung): jalankan permintaan streaming yang menghasilkan jawaban
+panjang dan beri stempel waktu per baris. Event harus tiba **bertahap**, bukan sekaligus di akhir:
+
+```bash
+curl -N -s -X POST "$PROXY_BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $GW_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Tulis 300 kata tentang laut."}],"stream":true}' \
+| while IFS= read -r line; do printf '%s %s\n' "$(date +%T.%N)" "$line"; done
+```
+
+Bandingkan dengan panggilan langsung ke gateway: bila stempel waktu di belakang proxy menumpuk di satu detik yang sama di akhir, proxy masih melakukan buffering.
 
 ## 11. Contoh integrasi
 
