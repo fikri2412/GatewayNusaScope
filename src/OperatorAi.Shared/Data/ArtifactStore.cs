@@ -162,13 +162,14 @@ public static partial class ArtifactStore
             var artifact = await db.Artifacts.AsNoTracking().FirstOrDefaultAsync(a => a.Id == artifactId, ct);
             if (artifact is null) return new ArtifactWrite(ArtifactStatus.NotFound);
             if (artifact.CurrentVersion != baseVersion) return new ArtifactWrite(ArtifactStatus.Conflict, artifact);
-            if (artifact.CurrentVersion >= ArtifactLimits.MaxVersions) return new ArtifactWrite(ArtifactStatus.VersionLimit, artifact);
 
             var newTitle = string.IsNullOrWhiteSpace(title) ? artifact.Title : title.Trim();
             var current = await db.ArtifactVersions.AsNoTracking()
                 .Where(v => v.ArtifactId == artifactId && v.Version == artifact.CurrentVersion)
                 .Select(v => v.Content).FirstAsync(ct);
             if (current == content && newTitle == artifact.Title) return new ArtifactWrite(ArtifactStatus.Unchanged, artifact, current);
+            // Sesudah Unchanged: menyimpan isi yang sama di versi terakhir bukan pelanggaran batas versi.
+            if (artifact.CurrentVersion >= ArtifactLimits.MaxVersions) return new ArtifactWrite(ArtifactStatus.VersionLimit, artifact);
 
             var next = baseVersion + 1;
             var now = DateTime.UtcNow;

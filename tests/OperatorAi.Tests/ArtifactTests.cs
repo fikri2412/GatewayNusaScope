@@ -253,6 +253,25 @@ public class ArtifactTests : QueueTestBase
     }
 
     [Fact]
+    public async Task At_the_version_limit_identical_content_is_unchanged_but_new_content_is_refused()
+    {
+        var (_, id) = await NewArtifactAsync("sama");
+        await using (var seed = NewContext())
+        {
+            seed.ArtifactVersions.Add(new ArtifactVersion { ArtifactId = id, Version = ArtifactLimits.MaxVersions, Content = "sama", Source = "user" });
+            await seed.SaveChangesAsync();
+            await seed.Artifacts.Where(a => a.Id == id).ExecuteUpdateAsync(s => s.SetProperty(a => a.CurrentVersion, ArtifactLimits.MaxVersions));
+        }
+
+        var (sameStatus, same) = await SaveAsync(id, ArtifactLimits.MaxVersions, "sama");
+        var (newStatus, _) = await SaveAsync(id, ArtifactLimits.MaxVersions, "beda");
+
+        Assert.Equal(200, sameStatus); // bukan 409 palsu: tidak ada versi baru yang diminta
+        Assert.Equal(ArtifactLimits.MaxVersions, same.GetProperty("currentVersion").GetInt32());
+        Assert.Equal(409, newStatus);
+    }
+
+    [Fact]
     public async Task Two_concurrent_saves_from_the_same_base_have_exactly_one_winner()
     {
         var (_, id) = await NewArtifactAsync("v1");

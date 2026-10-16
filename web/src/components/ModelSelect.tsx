@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isEligible } from '../api/models'
+import { disabledReason, isEligible } from '../api/models'
 import type { ModelInfoDto } from '../api/types'
 import { Icon, ModelGlyph } from './NusaUi'
 import './Composer.css'
@@ -327,6 +327,7 @@ export function ModelSelect({ models, error, value, onChange, onReload, variant 
 
           {allModels.map((m) => {
             const isSelected = value === m.id || (!value && m.id === 'deepseek-v4.1-flash')
+            const reason = disabledReason(m)
             const id = m.id.toLowerCase()
             let family = 'auto'
             let displayName = m.id
@@ -353,7 +354,7 @@ export function ModelSelect({ models, error, value, onChange, onReload, variant 
               displayName = 'Kimi'
             }
 
-            const subtitle = isSelected ? 'Default' : m.supportsVision ? 'Vision' : 'Teks'
+            const subtitle = reason ?? (isSelected ? 'Default' : m.supportsVision ? 'Vision' : 'Teks')
 
             return (
               <button
@@ -361,6 +362,9 @@ export function ModelSelect({ models, error, value, onChange, onReload, variant 
                 type="button"
                 role="option"
                 aria-selected={isSelected}
+                aria-disabled={reason !== null}
+                disabled={reason !== null}
+                title={reason ?? undefined}
                 style={{
                   fontFamily: 'inherit',
                   textAlign: 'left',
@@ -368,7 +372,8 @@ export function ModelSelect({ models, error, value, onChange, onReload, variant 
                   background: isSelected ? '#EAF3F1' : 'transparent',
                   borderRadius: 10,
                   padding: '8px 12px',
-                  cursor: 'pointer',
+                  cursor: reason ? 'not-allowed' : 'pointer',
+                  opacity: reason ? 0.55 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 12,
@@ -379,7 +384,7 @@ export function ModelSelect({ models, error, value, onChange, onReload, variant 
                   transition: 'background 0.12s',
                 }}
                 onMouseEnter={(e) => {
-                  if (!isSelected) e.currentTarget.style.background = '#F2F1ED'
+                  if (!isSelected && !reason) e.currentTarget.style.background = '#F2F1ED'
                 }}
                 onMouseLeave={(e) => {
                   if (!isSelected) e.currentTarget.style.background = 'transparent'

@@ -311,9 +311,11 @@ public static class DataPlaneEndpoints
             // flush di batas event benar-benar sampai ke klien/proxy. Perlindungan klien lambat tetap ada: write dan
             // flush berbatas deadline total (GA-02).
             http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+            // finally: body memegang pelepasan slot konkurensi dan dispose stream upstream, jadi harus jalan juga bila
+            // StartAsync gagal dengan exception selain pembatalan (mis. IOException saat klien putus).
             try { await response.StartAsync(http.RequestAborted); }
             catch (OperationCanceledException) { /* klien pergi: body di bawah mencatatnya sebagai 499 */ }
-            await body(response.Body, http.RequestAborted);
+            finally { await body(response.Body, http.RequestAborted); }
         }
     }
 }

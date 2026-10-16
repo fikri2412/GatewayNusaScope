@@ -91,4 +91,52 @@ public class UnsupportedFamilyTests(TestDb db) : FamilyProxyTestBase(db)
 
         Assert.Equal(true, (bool?)model["readiness"]!["available"]);
     }
+
+    [Fact]
+    public async Task A_skipped_route_does_not_overwrite_the_real_failure_of_an_earlier_route()
+    {
+        var s = await SetupFamilyAsync(ApiFamilies.GoogleGenerate);
+        await WithTenantAsync(s.TenantId, async (prov, ctx) =>
+        {
+            (await ctx.ModelRoutes.SingleAsync()).Priority = 1; // route google dicoba setelah route baru
+            var first = await prov.CreateCustomProviderAsync("up2", "https://up2.test/v1", "sk-second-5678", null, null, null, default);
+            ctx.ModelRoutes.Add(new ModelRoute { ModelId = s.ModelId, ProviderId = first.Id, UpstreamModel = "real-model-2", Priority = 0 });
+            await ctx.SaveChangesAsync();
+            return 0;
+        });
+        Upstream.Respond = _ =>
+        {
+            var r = FakeUpstream.Json(429, "{}");
+            r.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
+            return r;
+        };
+
+        var response = await PostChatAsync(s.ApiKey, Chat());
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode); // bukan 502 unsupported_upstream_family
+        Assert.Equal(TimeSpan.FromSeconds(30), response.Headers.RetryAfter?.Delta);
+        Assert.Equal("upstream_rate_limited", ErrorCode(await BodyAsync(response)));
+        Assert.Equal("up2.test", Assert.Single(Upstream.Requests).Uri.Host);
+        await using var ctx2 = Db.NewContext(s.TenantId);
+        var log = await ctx2.UsageLogs.SingleAsync();
+        Assert.Equal((1, "upstream_failed"), (log.Attempts, log.DeniedReason));
+    }
+
+    [Fact]
+    public async Task The_family_guard_ignores_letter_case_of_the_route_upstream_model()
+    {
+        var s = await SetupFamilyAsync(ApiFamilies.GoogleGenerate); // katalog: "real-model"
+        await WithTenantAsync(s.TenantId, async (_, ctx) =>
+        {
+            (await ctx.ModelRoutes.SingleAsync()).UpstreamModel = "REAL-Model"; // kolasi SQL tidak membedakan huruf
+            await ctx.SaveChangesAsync();
+            return 0;
+        });
+
+        var response = await PostChatAsync(s.ApiKey, Chat());
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("unsupported_upstream_family", ErrorCode(await BodyAsync(response)));
+        Assert.Empty(Upstream.Requests);
+    }
 }

@@ -51,10 +51,17 @@ public sealed class RefreshSessions(AppDbContext db, TimeProvider time, IOptions
 
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == row.UserId, ct);
         if (user is null) return (null, null);
-        row.RevokedAt = now;
+
+        // Klaim atomik: dua permintaan serentak dengan token yang sama tidak boleh sama-sama menerbitkan token pengganti.
+        // Yang kalah ditolak seperti tab kedua dalam tenggang (tanpa mencabut apa pun).
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var claimed = await db.RefreshTokens.Where(t => t.Id == row.Id && t.RevokedAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, now), ct);
+        if (claimed == 0) return (null, null);
         var token = AuthTokens.New();
         db.RefreshTokens.Add(Row(user.Id, token, now));
         await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         // ponytail: bersih-bersih baris kedaluwarsa menumpang rotasi, belum perlu job terjadwal.
         await db.RefreshTokens.Where(t => t.UserId == user.Id && t.ExpiresAt <= now).ExecuteDeleteAsync(ct);
         return (user, token);

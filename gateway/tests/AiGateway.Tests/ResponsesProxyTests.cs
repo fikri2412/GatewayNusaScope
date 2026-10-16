@@ -77,7 +77,7 @@ public class ResponsesProxyTests(TestDb db) : FamilyProxyTestBase(db)
             + Event("response.completed", """
                 {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"get_time","arguments":"{}"}],
                  "usage":{"input_tokens":14,"input_tokens_details":{"cached_tokens":4},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":21}}}
-                """.Replace("\n", "").Replace("  ", "")));
+                """.ReplaceLineEndings("").Replace("  ", "")));
 
         var response = await PostChatAsync(s.ApiKey,
             Chat(extra: ",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\"}}]"));
@@ -134,8 +134,8 @@ public class ResponsesProxyTests(TestDb db) : FamilyProxyTestBase(db)
     public async Task An_incomplete_response_wins_over_tool_calls_in_the_finish_reason(string reason, string expected)
     {
         var s = await SetupResponsesAsync();
-        Upstream.Respond = _ => FakeUpstream.Json(200, $$"""
-            {"id":"resp_1","object":"response","created_at":1700000000,"status":"incomplete","incomplete_details":{"reason":"{{reason}}"},"model":"real-model",
+        Upstream.Respond = _ => FakeUpstream.Json(200, $$$"""
+            {"id":"resp_1","object":"response","created_at":1700000000,"status":"incomplete","incomplete_details":{"reason":"{{{reason}}}"},"model":"real-model",
              "output":[{"type":"function_call","id":"fc_1","call_id":"call_9","name":"get_time","arguments":"{\"tz\":\"Asia/Jak"}],
              "usage":{"input_tokens":15,"output_tokens":20}}
             """);

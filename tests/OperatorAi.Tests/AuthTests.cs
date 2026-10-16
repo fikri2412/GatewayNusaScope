@@ -115,3 +115,29 @@ public class TokenIssuerTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 }
+
+public class RefreshRotationTests : QueueTestBase
+{
+    [Fact]
+    public async Task Two_simultaneous_rotations_of_the_same_token_leave_exactly_one_live_successor()
+    {
+        string token;
+        await using (var seed = NewContext())
+        {
+            var (user, error) = await AuthHarness.Accounts(seed).RegisterAsync("budi", "rahasia-123", "budi@example.com", CancellationToken.None);
+            Assert.Null(error);
+            token = await AuthHarness.Sessions(seed).IssueAsync(user!, CancellationToken.None);
+        }
+        await WarmPoolAsync(2);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(async () =>
+        {
+            await using var db = NewContext();
+            return await AuthHarness.Sessions(db).RotateAsync(token, CancellationToken.None);
+        })));
+
+        Assert.Equal(1, results.Count(r => r.User is not null)); // yang kalah ditolak, bukan ikut menerbitkan token
+        await using var check = NewContext();
+        Assert.Equal(1, await check.RefreshTokens.CountAsync(t => t.RevokedAt == null));
+    }
+}

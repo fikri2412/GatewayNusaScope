@@ -1,8 +1,10 @@
 using System.Globalization;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ClosedXML.Excel;
+using OperatorAi.Shared.Storage;
 
 namespace OperatorAi.Worker.Specialist.Excel;
 
@@ -18,6 +20,10 @@ public static class ExcelProfiler
     private const int HeaderScanRows = 10;
 
     private const int MaxSheets = 10, MaxColumns = 100, MaxExamples = 5, MaxSampleRows = 5, UniqueRowLimit = 10_000;
+
+    // Batas sumber daya .xlsx: ukuran upload membatasi byte terkompresi saja, sedangkan isi zip bisa mengembang ~1000x dan satu
+    // sel di XFD1048576 membuat pembacaan baris x kolom menyentuh miliaran sel. Terlampaui = file tidak bisa dianalisis (tanpa retry).
+    private const long MaxUncompressedBytes = 200L * 1024 * 1024, MaxAddressedCells = 5_000_000;
 
     private const string NumberType = "number", DateType = "date", TextType = "text", BoolType = "bool", EmptyType = "empty";
 
@@ -48,6 +54,7 @@ public static class ExcelProfiler
 
     private static FileProfile ProfileWorkbook(Stream content, string fileName, CancellationToken ct)
     {
+        GuardArchive(content);
         using IXLWorkbook workbook = new XLWorkbook(content);
         var sheets = new List<SheetProfile>();
         var sheetCount = workbook.Worksheets.Count;
@@ -62,6 +69,32 @@ public static class ExcelProfiler
         return new FileProfile(fileName, sheets, notes);
     }
 
+    /// <summary>Tolak zip yang mengembang melewati <see cref="MaxUncompressedBytes"/> sebelum ClosedXML memuatnya ke memori.</summary>
+    private static void GuardArchive(Stream content)
+    {
+        if (!content.CanSeek) return;
+        var start = content.Position;
+        try
+        {
+            using var zip = new ZipArchive(content, ZipArchiveMode.Read, leaveOpen: true);
+            long total = 0;
+            foreach (var entry in zip.Entries)
+            {
+                total += entry.Length;
+                if (total > MaxUncompressedBytes)
+                    throw new DocumentInputException("Isi file Excel terlalu besar setelah dibuka (melewati batas keamanan).");
+            }
+        }
+        catch (InvalidDataException)
+        {
+            // Bukan arsip zip yang valid: ClosedXML yang melaporkan kerusakannya seperti biasa.
+        }
+        finally
+        {
+            content.Position = start;
+        }
+    }
+
     private static SheetProfile ProfileSheet(IXLWorksheet worksheet, CancellationToken ct)
     {
         var firstRow = worksheet.FirstRowUsed(XLCellsUsedOptions.AllContents);
@@ -73,6 +106,9 @@ public static class ExcelProfiler
         var lastColumn = worksheet.LastColumnUsed(XLCellsUsedOptions.AllContents)!;
         var columnStart = firstColumn.ColumnNumber();
         var totalColumns = lastColumn.ColumnNumber() - columnStart + 1;
+        if ((long)lastRow.RowNumber() * totalColumns > MaxAddressedCells)
+            throw new DocumentInputException(
+                $"Sheet '{worksheet.Name}' terlalu besar atau terlalu jarang untuk dianalisis ({lastRow.RowNumber()} baris x {totalColumns} kolom). Ringkas atau pecah datanya.");
         var truncationNote = totalColumns > MaxColumns ? $"Kolom dibatasi {MaxColumns} dari {totalColumns}; duplikat tetap membandingkan seluruh kolom." : null;
         var merged = worksheet.MergedRanges.Count;
 

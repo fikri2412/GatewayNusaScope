@@ -125,8 +125,11 @@ internal static class SsePump
         {
             if (line.Length == 0) // batas event
             {
+                var flushed = assembler.HasPending;
                 await FlushLeftoversAsync();
-                if (skipBlank) { skipBlank = false; return false; }
+                // Baris kosong milik chunk usage-saja yang dibuang ikut dibuang, kecuali sisa yang baru diteruskan:
+                // sisa itu butuh pemisah event, kalau tidak event berikutnya menempel padanya.
+                if (skipBlank) { skipBlank = false; if (!flushed) return false; }
                 await writer.WriteAsync("\n".AsMemory(), overall.Token);
                 await writer.FlushAsync(overall.Token);
                 return false;

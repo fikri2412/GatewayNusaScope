@@ -441,6 +441,24 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal(UsageStatuses.Ok, (await LogAsync(s.TenantId)).Status);
     }
 
+    [Fact]
+    public async Task A_suppressed_usage_chunk_does_not_swallow_the_boundary_of_forwarded_leftovers()
+    {
+        var s = await SetupAsync(alias: Alias);
+        // Satu event: chunk usage-saja (dibuang, klien tidak minta usage) + baris JSON yang tidak pernah lengkap.
+        Upstream.Respond = _ => CompletedSse(Sse(Delta("c1", "ha"))
+            + "data: " + UsageChunk + "\ndata: {\"id\":\"x\",\n\n"
+            + Sse(Finish("c2"), "[DONE]"));
+
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("data: {\"id\":\"x\",\n\n", raw); // sisa tetap berakhir di batas event, tidak menempel ke event berikutnya
+        Assert.DoesNotContain("\"usage\"", raw);
+        Assert.Contains("\"finish_reason\":\"stop\"", raw);
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+    }
+
     // --- fallback sebelum commit ------------------------------------------------------------
 
     [Theory]

@@ -522,6 +522,7 @@ export function Composer({
               }}
               placeholder="Balas..."
               value={text}
+              maxLength={MAX_LENGTH}
               disabled={sending}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
