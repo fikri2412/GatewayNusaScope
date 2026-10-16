@@ -84,7 +84,7 @@ export function DiagramView({ source, pngName }: { source: string; pngName: stri
 
   return (
     <div className="canvas-diagram">
-      <div className="canvas-diagram-bar" role="toolbar" aria-label="Kontrol diagram">
+      <div className="canvas-diagram-bar is-float" role="toolbar" aria-label="Kontrol diagram">
         <button type="button" className="ghost-button" onClick={() => setZoom(ZOOMS[Math.max(0, ZOOMS.indexOf(zoom) - 1)])} disabled={zoom === ZOOMS[0]} aria-label="Perkecil">−</button>
         <button type="button" className="ghost-button" onClick={() => setZoom(1)} aria-label="Zoom 100%">{Math.round(zoom * 100)}%</button>
         <button type="button" className="ghost-button" onClick={() => setZoom(ZOOMS[Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + 1)])} disabled={zoom === ZOOMS[ZOOMS.length - 1]} aria-label="Perbesar">+</button>

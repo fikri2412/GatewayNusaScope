@@ -1,5 +1,5 @@
 import type { ArtifactSummary, MessageDto } from './api/types.ts'
-import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, normalizeMermaid, sizeSvg, SANDBOX_CSP, SANDBOX_FLAGS, buildSandboxDoc, SELECTION_ACTIONS, buildSelectionPrompt } from './canvas.ts'
+import { MAX_DIFF_LINES, artifactFileName, artifactsForMessage, changedLines, mermaidType, normalizeMermaid, sizeSvg, SANDBOX_CSP, SANDBOX_FLAGS, buildSandboxDoc, SELECTION_ACTIONS, buildSelectionPrompt } from './canvas.ts'
 
 // Jalankan: npm run check:canvas. Node menjalankan .ts ini langsung; tanpa framework/dependency.
 
@@ -83,5 +83,11 @@ ok(q.includes('apa maksudnya?') && q.includes('jangan mengubah artifact') && !q.
 deep(SELECTION_ACTIONS.kode!.map((a) => a.key), ['jelaskan', 'perbaiki', 'tanya'], 'aksi kode')
 deep(SELECTION_ACTIONS.diagram, undefined, 'diagram tidak punya toolbar teks')
 deep(SELECTION_ACTIONS.dokumen!.filter((a) => a.edits).map((a) => a.key), ['perpendek', 'formal'], 'hanya Perpendek/Formal yang mengubah dokumen')
+
+deep(mermaidType('erDiagram\n A ||--o{ B : has'), 'erDiagram', 'jenis ERD')
+deep(mermaidType('%% komentar\n\nflowchart TD\n A-->B'), 'flowchart', 'komentar dan baris kosong dilewati')
+deep(mermaidType('---\ntitle: x\n---\nclassDiagram\n A <|-- B'), 'classDiagram', 'front matter dilewati')
+deep(mermaidType('```mermaid\nsequenceDiagram\n A->>B: hi\n```'), 'sequenceDiagram', 'pagar kode dilewati')
+deep(mermaidType(''), 'mermaid', 'kosong jatuh ke mermaid')
 
 console.log('canvas.check: semua pemeriksaan lulus')

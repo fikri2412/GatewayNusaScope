@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { attachmentLimitError, attachmentsPolicyError, isImageContentType, uploadError, visionBlockReason } from '../api/attachments'
 import { errorMessage, type UploadOptions } from '../api/client'
 import { isEligible } from '../api/models'
@@ -175,6 +175,14 @@ export function Composer({
     setDragging(false)
     void addFiles(Array.from(e.dataTransfer.files))
   }
+
+  // Kolom balas di chat tumbuh mengikuti isi (maks 8 baris), lalu menggulir; kembali satu baris saat dikosongkan.
+  useEffect(() => {
+    const el = textarea.current
+    if (!el || home) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+  }, [text, home])
 
   const suggest = (label: string) => {
     // Draft yang sudah ada tidak pernah dibuang: chip menambahkan awalan, bukan menimpa ketikan.
@@ -507,26 +515,32 @@ export function Composer({
             </div>
             </div>
             <div className="ns-chat-input-wrap">
-            <input
+            <textarea
+              ref={textarea}
               className="ns-chat-input"
+              rows={1}
               style={{
                 flex: 1,
                 minWidth: 0,
                 border: 'none',
                 outline: 'none',
                 background: 'transparent',
+                resize: 'none',
                 fontFamily: 'inherit',
                 fontSize: 15,
+                lineHeight: 1.5,
                 color: '#1A1A1D',
-                paddingLeft: 4,
+                padding: '8px 4px',
               }}
               placeholder="Balas..."
+              aria-label="Tulis balasan"
               value={text}
               maxLength={MAX_LENGTH}
               disabled={sending}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                // Enter mengirim, Shift+Enter baris baru; Enter saat memilih kandidat IME tidak mengirim.
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault()
                   void submit()
                 }

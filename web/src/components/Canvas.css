@@ -4,38 +4,71 @@
 
 .canvas { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--ns-border); background: var(--ns-canvas-bg); overflow: hidden; }
 .canvas[hidden], .canvas-body[hidden] { display: none; }
-.canvas-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 0; background: var(--ns-tabstrip); flex-shrink: 0; }
-.canvas-tabs { display: flex; gap: 2px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
-.canvas-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; min-height: 36px; padding: 0 12px; border: 0; border-radius: var(--ns-radius-md) var(--ns-radius-md) 0 0; background: transparent; color: var(--ns-text-3); font-family: inherit; font-size: var(--ns-text-base-sm); cursor: pointer; flex-shrink: 0; }
-.canvas-tab:hover { background: var(--ns-tab-hover); }
-.canvas-tab[aria-selected="true"] { background: var(--ns-canvas-bg); color: var(--ns-text); font-weight: 500; }
-.canvas-tab-kind { font-size: var(--ns-text-xs); color: var(--ns-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Header: tab artifact berbentuk segmen, lalu aksi artifact aktif (versi, urungkan, salin, unduh) dan tutup. */
+.canvas-head { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--ns-border); background: var(--ns-bg); flex-shrink: 0; }
+.canvas-tabs { display: flex; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 3px; border-radius: 10px; background: var(--ns-muted); overflow-x: auto; scrollbar-width: none; }
+.canvas-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 200px; height: 34px; padding: 0 12px; border: 0; border-radius: var(--ns-radius-sm); background: transparent; color: var(--ns-text-3); font-family: inherit; font-size: var(--ns-text-base-sm); font-weight: 500; cursor: pointer; flex-shrink: 0; }
+.canvas-tab:hover { color: var(--ns-text); }
+.canvas-tab[aria-selected="true"] { background: var(--ns-surface); color: var(--ns-text); box-shadow: 0 1px 2px rgba(26, 26, 29, 0.1); }
 .canvas-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-dirty { color: var(--ns-accent); font-size: 18px; line-height: 1; }
-.canvas-new { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--ns-border); flex-shrink: 0; }
-.canvas-new .ghost-button { height: 32px; padding: 0 10px; font-size: var(--ns-text-base-sm); }
+.canvas-head-spacer { flex: 1; }
+.canvas-head-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.canvas-head .icon-button { width: 36px; height: 36px; border-radius: var(--ns-radius-sm); }
+.canvas-head .icon-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.canvas-ver { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-surface); color: var(--ns-text-3); cursor: pointer; }
+.canvas-ver:hover { background: var(--ns-muted); }
+.canvas-version { font-family: var(--ns-font-mono); font-size: var(--ns-text-sm); color: var(--ns-text); }
+
+/* Menu "Artifact baru": jenis artifact aktif di atas, jenis lain di bawah pemisah. */
+.canvas-newwrap { position: relative; flex: none; }
+.canvas-menu { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 220px; padding: 6px; border: 1px solid var(--ns-border); border-radius: 14px; background: var(--ns-surface); box-shadow: 0 12px 32px rgba(26, 26, 29, 0.12); display: flex; flex-direction: column; }
+.canvas-menu-item { flex: 1; min-height: 38px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; font-family: inherit; font-size: var(--ns-text-base); color: var(--ns-text); text-align: left; cursor: pointer; }
+.canvas-menu-item:hover:not(:disabled) { background: var(--ns-surface-2); }
+.canvas-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-menu-row, .canvas-menu-group { display: flex; align-items: center; gap: 6px; }
+.canvas-menu-group { flex-direction: column; align-items: stretch; gap: 0; }
+.canvas-menu-sep { margin: 4px 4px 2px; padding: 8px 6px 2px; border-top: 1px solid var(--ns-divider); font-size: var(--ns-text-xs); color: var(--ns-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .canvas-lang { height: 32px; padding: 0 8px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); font-family: inherit; font-size: var(--ns-text-base-sm); color: var(--ns-text); }
 .canvas-empty { padding: 24px 18px; }
 
+/* Panggung kerja: latar canvas, kolom tengah (dokumen 720px, lainnya 860px), kartu putih berradius besar. */
 .canvas-body { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-.canvas-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 10px 14px; border-bottom: 1px solid var(--ns-divider); flex-shrink: 0; }
-.canvas-title { flex: 1 1 160px; min-width: 0; height: 36px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--ns-radius-md); background: transparent; font-family: inherit; font-size: var(--ns-text-md); font-weight: 600; color: var(--ns-text); }
+.canvas-stage { display: flex; flex: 1; min-height: 0; padding: 24px; overflow: auto; }
+.canvas-column { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 860px; margin: 0 auto; min-height: min-content; }
+.canvas-titlebar { display: flex; align-items: center; gap: 10px; }
+.canvas-title { flex: 1; min-width: 0; height: 36px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--ns-radius-md); background: transparent; font-family: inherit; font-size: var(--ns-text-md); font-weight: 600; color: var(--ns-text); }
 .canvas-title:hover, .canvas-title:focus { border-color: var(--ns-border); background: var(--ns-surface); }
-.canvas-version { font-family: var(--ns-font-mono); font-size: var(--ns-text-sm); color: var(--ns-text-muted); }
-.canvas-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.canvas-actions .ghost-button, .canvas-actions .primary-button { height: 34px; min-height: 34px; padding: 0 12px; font-size: var(--ns-text-base-sm); }
-.canvas-actions .icon-button { width: 34px; height: 34px; }
-.canvas-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-.canvas-note { margin: 8px 14px 0; font-size: var(--ns-text-base-sm); }
+.canvas-titlebar .primary-button { height: 34px; min-height: 34px; padding: 0 14px; font-size: var(--ns-text-base-sm); }
+.canvas-titlebar .primary-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.canvas-viewbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.canvas-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--ns-border); }
+.canvas-seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; font-family: inherit; font-size: var(--ns-text-base-sm); font-weight: 500; color: var(--ns-text-3); cursor: pointer; }
+.canvas-seg button[aria-selected="true"] { background: var(--ns-surface); color: var(--ns-text); box-shadow: 0 1px 2px rgba(26, 26, 29, 0.1); }
+.canvas-seg button:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-viewinfo { display: inline-flex; align-items: center; gap: 6px; font-size: var(--ns-text-sm); color: var(--ns-text-3); }
+.canvas-viewinfo svg { color: var(--ns-accent); }
+.canvas-viewinfo code { font-family: var(--ns-font-mono); color: var(--ns-text); }
+.canvas-viewbar .ghost-button { height: 30px; padding: 0 10px; margin-left: auto; font-size: var(--ns-text-base-sm); }
+.canvas-viewbar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.canvas-note { margin: 0; font-size: var(--ns-text-base-sm); }
 .canvas-conflict { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; border: 1px solid var(--ns-accent-soft); border-radius: var(--ns-radius-md); background: var(--ns-accent-tint); color: var(--ns-text-2); }
-.canvas-history { max-height: 160px; margin: 8px 14px 0; padding: 4px 0; overflow-y: auto; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }
+.canvas-history { max-height: 160px; padding: 4px 0; overflow-y: auto; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }
 .canvas-history ul { margin: 0; padding: 0; list-style: none; }
 .canvas-history li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 12px; font-size: var(--ns-text-base-sm); }
 .canvas-history li.is-viewing { background: var(--ns-accent-tint); }
 
-.canvas-content { display: flex; flex: 1; min-height: 0; margin: 10px 14px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); overflow: hidden; }
-.canvas-text { flex: 1; width: 100%; padding: 18px 22px; border: 0; resize: none; outline: none; background: transparent; font-family: var(--ns-font-sans); font-size: var(--ns-text-base); line-height: 1.7; color: var(--ns-text); }
-.canvas-doc { flex: 1; min-width: 0; padding: 18px 22px; overflow-y: auto; font-size: var(--ns-text-base); line-height: 1.7; }
+.canvas-content { display: flex; flex: 1 0 420px; min-height: 0; min-width: 0; border: 1px solid var(--ns-border); border-radius: 14px; background: var(--ns-surface); overflow: hidden; }
+.canvas-content.is-code { border-color: var(--ns-code-bg); background: var(--ns-code-bg); }
+/* Dokumen: kertas 720px dengan judul serif, seperti konsep. */
+.canvas-content.is-paper { flex: 0 0 auto; width: 100%; max-width: 720px; align-self: center; min-height: 360px; }
+.canvas-text { flex: 1; width: 100%; padding: 28px 36px; border: 0; resize: none; outline: none; background: transparent; font-family: var(--ns-font-sans); font-size: var(--ns-text-md); line-height: 1.75; color: var(--ns-text-2); }
+.canvas-doc { flex: 1; min-width: 0; padding: 48px 56px; font-size: var(--ns-text-md); line-height: 1.75; color: var(--ns-text-2); }
+.canvas-doc h1 { margin: 0 0 6px; font-family: var(--ns-font-serif); font-size: 36px; font-weight: 600; letter-spacing: -0.5px; line-height: 1.15; color: var(--ns-text); }
+.canvas-doc h2 { margin: 22px 0 0; font-size: 17px; font-weight: 600; color: var(--ns-text); }
 .canvas-text:focus-visible, .canvas-code-input:focus-visible, .canvas-code-view:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: -2px; }
 
 .canvas-code-edit { display: flex; flex: 1; min-width: 0; background: var(--ns-code-bg); }
@@ -47,15 +80,22 @@
 .canvas-line.is-changed { background: var(--ns-code-highlight); box-shadow: inset 3px 0 0 var(--ns-peach); }
 .canvas-line-no { display: inline-block; width: 44px; padding-right: 10px; text-align: right; color: var(--ns-code-line-no); user-select: none; flex-shrink: 0; margin-right: 12px; }
 
-.canvas-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px 12px; font-size: var(--ns-text-sm); flex-shrink: 0; }
+.canvas-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: var(--ns-text-sm); flex-shrink: 0; }
 .canvas-confirm { display: inline-flex; align-items: center; gap: 10px; color: var(--ns-danger); }
 
 /* Kartu referensi artifact di bawah jawaban AI. */
-.artifact-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -14px; }
-.artifact-card { display: inline-flex; align-items: center; gap: 10px; max-width: 100%; min-height: 44px; padding: 8px 14px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); font-family: inherit; font-size: var(--ns-text-base-sm); color: var(--ns-text); cursor: pointer; text-align: left; }
-.artifact-card:hover { background: var(--ns-surface-2); }
-.artifact-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.artifact-card-meta { color: var(--ns-text-muted); font-size: var(--ns-text-sm); flex-shrink: 0; }
+.artifact-cards { display: flex; flex-direction: column; gap: 8px; margin-top: -14px; }
+.artifact-card { display: flex; align-items: center; gap: 14px; width: 100%; max-width: 480px; padding: 12px 16px 12px 12px; border: 1px solid var(--ns-border); border-radius: 16px; background: var(--ns-surface); font-family: inherit; color: var(--ns-text); cursor: pointer; text-align: left; }
+.artifact-card:hover { border-color: var(--ns-accent); }
+.artifact-card[aria-current="true"] { border-color: var(--ns-accent); box-shadow: 0 0 0 3px var(--ns-accent-tint); }
+.artifact-card-tile { display: flex; align-items: center; justify-content: center; width: 48px; height: 56px; border-radius: 10px; background: var(--ns-surface-2); color: var(--ns-text-3); flex-shrink: 0; }
+.artifact-card.kind-kode .artifact-card-tile { background: var(--ns-model-minimax-tint); color: var(--ns-model-minimax); }
+.artifact-card.kind-diagram .artifact-card-tile { background: var(--ns-accent-tint); color: var(--ns-accent); }
+.artifact-card.kind-gambar .artifact-card-tile { background: var(--ns-model-glm-tint); color: var(--ns-model-glm); }
+.artifact-card.kind-spreadsheet .artifact-card-tile { background: var(--ns-accent-tint-2); color: var(--ns-accent); }
+.artifact-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.artifact-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ns-text-md); font-weight: 600; }
+.artifact-card-meta { color: var(--ns-text-muted); font-size: var(--ns-text-base-sm); }
 
 @media (max-width: 720px) {
   /* Layar sempit: Canvas yang terbuka menggantikan chat (tutup Canvas untuk kembali); ditumpuk di bawah chat
@@ -63,7 +103,10 @@
   .workspace.with-canvas { grid-template-columns: minmax(0, 1fr); }
   .workspace.with-canvas > .chat { display: none; }
   .canvas { height: 85dvh; border-left: 0; border-top: 1px solid var(--ns-border); }
-  .canvas-actions { width: 100%; }
+  .canvas-stage { padding: 14px; }
+  .canvas-doc { padding: 28px 20px; }
+  .canvas-doc h1 { font-size: 28px; }
+  .canvas-head-spacer { display: none; }
 }
 
 /* Diagram Mermaid: bilah kontrol + panggung gulir bertitik. */
@@ -71,6 +114,10 @@
 .canvas-diagram-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--ns-divider); }
 .canvas-diagram-bar .ghost-button { height: 30px; padding: 0 10px; font-size: var(--ns-text-base-sm); min-width: 34px; justify-content: center; }
 .canvas-diagram-bar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-diagram { position: relative; }
+.canvas-diagram-bar.is-float { position: absolute; z-index: 2; right: 12px; bottom: 12px; padding: 3px; gap: 2px; border: 1px solid var(--ns-border); border-radius: 10px; background: var(--ns-surface); }
+.canvas-diagram-bar.is-float .ghost-button { height: 30px; border: 0; background: transparent; }
+.canvas-diagram-bar.is-float .ghost-button:hover:not(:disabled) { background: var(--ns-muted); }
 .canvas-diagram-stage { flex: 1; min-height: 0; padding: 16px; overflow: auto; background-color: var(--ns-surface); background-image: radial-gradient(var(--ns-placeholder-line) 1px, transparent 1px); background-size: 18px 18px; }
 .canvas-diagram-img { display: block; max-width: none; margin: 0 auto; background: #fff; border-radius: var(--ns-radius-md); }
 
@@ -83,15 +130,20 @@
 .canvas-sheet-grid { position: relative; flex: 1; min-height: 320px; }
 .canvas-sheet-grid > .fortune-container { position: absolute; inset: 0; }
 
-/* Toolbar AI untuk teks terpilih. */
-.canvas-ai-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 10px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }
-.canvas-ai-bar .ghost-button { height: 30px; padding: 0 10px; font-size: var(--ns-text-base-sm); }
-.canvas-ai-bar .ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Toolbar AI untuk teks terpilih: pil gelap seperti konsep. */
+.canvas-ai-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; align-self: flex-start; max-width: 100%; padding: 4px; border-radius: 12px; background: var(--ns-primary); color: var(--ns-text-on-dark-muted); box-shadow: 0 10px 24px rgba(26, 26, 29, 0.22); font-size: var(--ns-text-sm); }
+.canvas-ai-tag { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px 0 6px; }
+.canvas-ai-tag span { color: var(--ns-peach); }
+.canvas-ai-info { padding: 0 6px; }
+.canvas-ai-warn { padding: 0 6px; color: var(--ns-peach); }
+.canvas-ai-bar .ghost-button { height: 32px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; font-size: var(--ns-text-base-sm); color: #fff; }
+.canvas-ai-bar .ghost-button:hover:not(:disabled) { background: var(--ns-primary-hover); }
+.canvas-ai-bar .ghost-button:disabled { opacity: 0.45; cursor: not-allowed; }
 .canvas-ai-ask { display: flex; align-items: center; gap: 6px; flex: 1 1 220px; }
 .canvas-ai-ask input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); font-family: inherit; font-size: var(--ns-text-base-sm); }
 
 /* Studio gambar: formulir generate/variasi, galeri batch, skeleton. */
-.canvas-studio { display: flex; flex-direction: column; gap: 8px; margin: 10px 14px; padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); }
+.canvas-studio { display: flex; flex-direction: column; gap: 8px; margin: 12px 24px 0; padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); }
 .canvas-studio textarea { width: 100%; padding: 8px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); font-family: inherit; font-size: var(--ns-text-base-sm); resize: vertical; }
 .canvas-studio-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: var(--ns-text-base-sm); }
 .canvas-studio-row select { height: 30px; margin-left: 4px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); font-family: inherit; }
@@ -110,4 +162,4 @@
 .canvas-thumb-meta { font-size: var(--ns-text-xs); }
 .canvas-skeleton { min-height: 180px; cursor: default; background: linear-gradient(90deg, var(--ns-surface-2) 25%, var(--ns-muted) 50%, var(--ns-surface-2) 75%); background-size: 200% 100%; animation: canvas-shimmer 1.4s linear infinite; }
 @keyframes canvas-shimmer { to { background-position: -200% 0; } }
-.canvas-lineage { margin: 8px 14px 0; font-size: var(--ns-text-base-sm); }
+.canvas-lineage { font-size: var(--ns-text-base-sm); }

@@ -80,6 +80,21 @@ export const kindLabel = (kind: ArtifactKind) =>
 /** Isi awal diagram baru; sintaks valid supaya hasilnya langsung terlihat. */
 export const DIAGRAM_STARTER = 'flowchart TD\n  A[Mulai] --> B{Data lengkap?}\n  B -->|Ya| C[Selesai]\n  B -->|Tidak| A'
 
+/** Jenis diagram dari baris pertama sintaks Mermaid (`erDiagram`, `flowchart`, ...), untuk keterangan di bar tampilan. */
+export function mermaidType(source: string): string {
+  let inFrontMatter = false
+  for (const raw of source.split('\n')) {
+    const line = raw.trim()
+    if (line === '---') {
+      inFrontMatter = !inFrontMatter
+      continue
+    }
+    if (inFrontMatter || line === '' || line.startsWith('%%') || line.startsWith('```')) continue
+    return /^[A-Za-z][\w-]*/.exec(line)?.[0] ?? 'mermaid'
+  }
+  return 'mermaid'
+}
+
 /** AI kadang membungkus Mermaid dengan pagar kode; renderer hanya butuh sintaksnya. */
 export function normalizeMermaid(source: string): string {
   const text = source.trim()
