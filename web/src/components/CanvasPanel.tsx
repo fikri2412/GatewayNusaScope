@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { KeyboardEvent } from 'react'
 import { Highlight, themes } from 'prism-react-renderer'
 import { createArtifact, deleteArtifact, getArtifact, getArtifactVersion, listArtifactVersions, restoreArtifact, saveArtifact } from '../api/artifacts'
 import { ApiError, errorMessage } from '../api/client'
 import type { ArtifactDto, ArtifactKind, ArtifactSummary, ArtifactVersionContent, ArtifactVersionInfo } from '../api/types'
-import { CODE_LANGUAGES, DIAGRAM_STARTER, MAX_SELECTION_CHARS, SELECTION_ACTIONS, artifactFileName, buildSelectionPrompt, changedLines, kindLabel, sourceLabel } from '../canvas'
+import { CODE_LANGUAGES, DIAGRAM_STARTER, MAX_SELECTION_CHARS, SELECTION_ACTIONS, artifactFileName, buildSelectionPrompt, changedLines, kindLabel, mermaidType, sourceLabel } from '../canvas'
 import type { SelectionAction } from '../canvas'
 import { DiagramView } from './DiagramView'
 import { GenerateImageForm, ImageGallery, VariationForm } from './ImageStudio'
@@ -87,17 +88,22 @@ type EditorProps = {
   sourceTitle: string | null
   /** Minta AI membuat gambar/variasi (menandai skeleton galeri sebanyak `count`). */
   onAskImage: (prompt: string, count: number) => Promise<void>
+  /** Wadah aksi (versi, urungkan, salin, unduh) di header panel; hanya editor yang terlihat mengisinya. */
+  actionsHost: HTMLElement | null
 }
 
 /**
  * Satu artifact: edit, simpan (versi baru dari versi dasar yang dilihat), urungkan, riwayat, salin, unduh.
  * Tetap terpasang saat tab lain aktif supaya draf yang belum disimpan tidak hilang.
  */
-function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, onAskAi, aiBusy, sourceTitle, onAskImage }: EditorProps) {
+function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, onAskAi, aiBusy, sourceTitle, onAskImage, actionsHost }: EditorProps) {
   const [loaded, setLoaded] = useState<ArtifactDto | null>(null)
   const [draft, setDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState(summary.title)
-  const [mode, setMode] = useState<'edit' | 'view' | 'preview'>(summary.kind === 'diagram' || summary.kind === 'gambar' ? 'view' : 'edit')
+  const [mode, setMode] = useState<'edit' | 'view' | 'preview'>(
+    // Hasil buatan AI langsung tampil sebagai hasil (kertas dokumen, diagram, gambar); buatan sendiri dibuka untuk diedit.
+    summary.kind === 'diagram' || summary.kind === 'gambar' || (summary.kind === 'dokumen' && summary.sourceMessageId !== null) ? 'view' : 'edit',
+  )
   const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [viewing, setViewing] = useState<ArtifactVersionContent | null>(null)
@@ -294,155 +300,184 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
   const isDiagram = summary.kind === 'diagram'
   const isSheet = summary.kind === 'spreadsheet'
   const isImage = summary.kind === 'gambar'
+  const isDoc = summary.kind === 'dokumen'
   const isHtml = isCode && summary.language === 'html'
   const language = summary.language ?? 'text'
   const shown = viewing?.content ?? draft
   const fileName = artifactFileName(titleDraft, summary.kind, summary.language)
 
+  const viewTabs: { key: 'view' | 'edit' | 'preview'; label: string }[] = isSheet
+    ? []
+    : isDiagram
+      ? [{ key: 'view', label: 'Hasil' }, { key: 'edit', label: 'Kode Mermaid' }]
+      : isImage
+        ? [{ key: 'view', label: 'Hasil' }, { key: 'edit', label: 'Kode SVG' }]
+        : isCode
+          ? [{ key: 'view', label: 'Sorotan' }, { key: 'edit', label: 'Edit' }, ...(isHtml ? [{ key: 'preview' as const, label: 'Pratinjau' }] : [])]
+          : [{ key: 'view', label: 'Pratinjau' }, { key: 'edit', label: 'Edit' }]
+
   return (
     // oxlint-disable-next-line jsx-a11y/no-static-element-interactions
     <div className="canvas-body" hidden={hidden} onKeyDown={onKeyDown}>
-      <div className="canvas-toolbar">
-        <input
-          className="canvas-title"
-          value={titleDraft}
-          maxLength={MAX_TITLE}
-          aria-label="Judul artifact"
-          onChange={(e) => setTitleDraft(e.target.value)}
-          disabled={viewing !== null}
-        />
-        <span className="canvas-version" title={`Versi aktif di server: ${loaded.currentVersion}`}>v{loaded.currentVersion}{dirty ? ' •' : ''}</span>
-        <div className="canvas-actions">
-          {!isSheet && <button type="button" className="ghost-button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} disabled={viewing !== null}>
-            {mode === 'edit' ? (isCode ? 'Sorotan' : isDiagram || isImage ? 'Hasil' : 'Pratinjau') : isDiagram && mode === 'view' ? 'Kode Mermaid' : isImage && mode === 'view' ? 'Kode SVG' : 'Edit'}
-          </button>}
-          {isHtml && (
-            <button type="button" className="ghost-button" aria-pressed={mode === 'preview'} onClick={() => setMode(mode === 'preview' ? 'edit' : 'preview')} disabled={viewing !== null}>
-              Pratinjau
-            </button>
-          )}
-          <button type="button" className="ghost-button" onClick={() => void undo()} disabled={busy || viewing !== null || (!dirty && loaded.currentVersion < 2)}
-            title={dirty ? 'Buang perubahan yang belum disimpan' : `Kembali ke isi v${loaded.currentVersion - 1} (dicatat sebagai versi baru)`}>
-            {dirty ? 'Buang perubahan' : 'Urungkan'}
+      {!hidden && actionsHost && createPortal(
+        <>
+          <button type="button" className="canvas-ver" onClick={toggleHistory} aria-expanded={historyOpen} aria-label="Riwayat versi" title={`Riwayat versi (aktif di server: v${loaded.currentVersion})`}>
+            <span className="canvas-version">v{loaded.currentVersion}{dirty ? ' •' : ''}</span>
+            <Icon name="chevron" size={11} />
           </button>
-          {isImage && (
-            <button type="button" className="ghost-button" onClick={() => setVariationOpen((o) => !o)} aria-expanded={variationOpen} disabled={viewing !== null}>Variasi…</button>
-          )}
-          <button type="button" className="ghost-button" onClick={toggleHistory} aria-expanded={historyOpen}>Riwayat</button>
+          <button type="button" className="icon-button" onClick={() => void undo()} disabled={busy || viewing !== null || (!dirty && loaded.currentVersion < 2)}
+            aria-label={dirty ? 'Buang perubahan' : 'Urungkan'}
+            title={dirty ? 'Buang perubahan yang belum disimpan' : `Kembali ke isi v${loaded.currentVersion - 1} (dicatat sebagai versi baru)`}>
+            <Icon name="undo" size={17} />
+          </button>
           {!isSheet && (
             <>
               <button type="button" className="icon-button" onClick={() => void copy()} aria-label={copied ? 'Tersalin' : 'Salin isi'} title={copied ? 'Tersalin' : 'Salin isi'}>
-                <Icon name={copied ? 'check' : 'copy'} />
+                <Icon name={copied ? 'check' : 'copy'} size={17} />
               </button>
               <button type="button" className="icon-button" onClick={() => downloadArtifact(fileName, shown, summary.kind)} aria-label={`Unduh ${fileName}`} title={`Unduh ${fileName}`}>
-                <Icon name="upload" />
+                <Icon name="download" size={17} />
               </button>
             </>
           )}
-          <button type="button" className="primary-button" onClick={() => void save()} disabled={!dirty || busy || viewing !== null}>
-            {busy ? 'Menyimpan…' : 'Simpan'}
-          </button>
-        </div>
-      </div>
-
-      {error && <p className="error canvas-note" role="alert">{error}</p>}
-      {selectionActions.length > 0 && mode === 'edit' && viewing === null && selectedText !== '' && (
-        <div className="canvas-note canvas-ai-bar" role="group" aria-label="Aksi AI untuk teks terpilih">
-          <span className="muted">Terpilih {selectedText.length.toLocaleString('id-ID')} karakter</span>
-          {selectionActions.map((a) => (
-            <button key={a.key} type="button" className="ghost-button" onClick={() => void askAi(a)}
-              disabled={busy || aiBusy || dirty || selectedText.length > MAX_SELECTION_CHARS}
-              title={dirty ? 'Simpan dulu supaya AI membaca isi yang sama denganmu' : aiBusy ? 'AI sedang menjawab di chat' : undefined}>
-              {a.label}
+        </>,
+        actionsHost,
+      )}
+      <div className="canvas-stage">
+        <div className="canvas-column">
+          <div className="canvas-titlebar">
+            <input
+              className="canvas-title"
+              value={titleDraft}
+              maxLength={MAX_TITLE}
+              aria-label="Judul artifact"
+              onChange={(e) => setTitleDraft(e.target.value)}
+              disabled={viewing !== null}
+            />
+            <button type="button" className="primary-button" onClick={() => void save()} disabled={!dirty || busy || viewing !== null}>
+              {busy ? 'Menyimpan…' : 'Simpan'}
             </button>
-          ))}
-          {asking && (
-            <form className="canvas-ai-ask" onSubmit={(e) => { e.preventDefault(); void askAi(asking) }}>
-              <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Tulis pertanyaanmu" aria-label="Pertanyaan untuk AI" maxLength={500} />
-              <button type="submit" className="ghost-button" disabled={busy || aiBusy || question.trim() === ''}>Kirim</button>
-            </form>
-          )}
-          {selectedText.length > MAX_SELECTION_CHARS && <span className="error">Pilihan terlalu panjang (maksimal {MAX_SELECTION_CHARS.toLocaleString('id-ID')} karakter).</span>}
-          {dirty && <span className="muted">Simpan dulu agar AI membaca isi yang sama.</span>}
-        </div>
-      )}
-      {aiNote && <p className="canvas-note muted" role="status">{aiNote}</p>}
-      {isImage && summary.derivedFromId && (
-        <p className="canvas-lineage muted">Variasi dari {sourceTitle ? `“${sourceTitle}”` : 'sumber yang sudah dihapus'}{summary.derivedFromVersion ? ` (v${summary.derivedFromVersion})` : ''}.</p>
-      )}
-      {isImage && variationOpen && viewing === null && (
-        dirty
-          ? <p className="canvas-note muted" role="status">Simpan dulu perubahanmu agar AI membuat variasi dari isi yang sama.</p>
-          : <VariationForm artifact={{ id: summary.id, title: loaded.title }} version={loaded.currentVersion} busy={aiBusy} onSubmit={async (prompt, count) => { await onAskImage(prompt, count); setVariationOpen(false) }} />
-      )}
-      {conflict && (
-        <div className="canvas-note canvas-conflict" role="alert">
-          <span>Artifact sudah berubah di tempat lain (mis. diperbarui AI). Penyimpananmu ditolak agar tidak menimpa.</span>
-          <button type="button" className="text-button" onClick={() => void copy()}>Salin edit saya</button>
-          <button type="button" className="text-button" onClick={() => void load()}>Muat versi terbaru</button>
-        </div>
-      )}
-      {stale && dirty && !conflict && (
-        <div className="canvas-note canvas-conflict" role="status">
-          <span>Versi terbaru di server (v{summary.currentVersion}) berbeda dari yang kamu edit.</span>
-          <button type="button" className="text-button" onClick={() => void load()}>Muat versi terbaru (buang edit)</button>
-        </div>
-      )}
+          </div>
 
-      {historyOpen && (
-        <div className="canvas-history">
-          {versions === null ? <p className="muted">Memuat riwayat…</p> : (
-            <ul>
-              {versions.map((v) => (
-                <li key={v.version} className={viewing?.version === v.version ? 'is-viewing' : undefined}>
-                  <span>v{v.version} · {sourceLabel(v.source)} · {formatTime(v.createdAt)} · {v.length.toLocaleString('id-ID')} karakter</span>
-                  {v.version === loaded.currentVersion ? <span className="muted">aktif</span> : (
-                    <button type="button" className="text-button" onClick={() => void view(v.version)}>Lihat</button>
-                  )}
-                </li>
+          {(viewTabs.length > 0 || isImage) && (
+            <div className="canvas-viewbar">
+              {viewTabs.length > 0 && (
+                <div className="canvas-seg" role="tablist" aria-label="Tampilan artifact">
+                  {viewTabs.map((t) => (
+                    <button key={t.key} type="button" role="tab" aria-selected={mode === t.key} disabled={viewing !== null} onClick={() => setMode(t.key)}>{t.label}</button>
+                  ))}
+                </div>
+              )}
+              {isDiagram && mode === 'view' && (
+                <span className="canvas-viewinfo"><Icon name="check" size={14} />Dirender dari Mermaid · <code>{mermaidType(shown)}</code></span>
+              )}
+              {isImage && (
+                <button type="button" className="ghost-button" onClick={() => setVariationOpen((o) => !o)} aria-expanded={variationOpen} disabled={viewing !== null}>Variasi…</button>
+              )}
+            </div>
+          )}
+
+          {error && <p className="error canvas-note" role="alert">{error}</p>}
+          {selectionActions.length > 0 && mode === 'edit' && viewing === null && selectedText !== '' && (
+            <div className="canvas-ai-bar" role="group" aria-label="Aksi AI untuk teks terpilih">
+              <span className="canvas-ai-tag"><span aria-hidden="true">✦</span> AI</span>
+              <span className="canvas-ai-info">Terpilih {selectedText.length.toLocaleString('id-ID')} karakter</span>
+              {selectionActions.map((a) => (
+                <button key={a.key} type="button" className="ghost-button" onClick={() => void askAi(a)}
+                  disabled={busy || aiBusy || dirty || selectedText.length > MAX_SELECTION_CHARS}
+                  title={dirty ? 'Simpan dulu supaya AI membaca isi yang sama denganmu' : aiBusy ? 'AI sedang menjawab di chat' : undefined}>
+                  {a.label}
+                </button>
               ))}
-            </ul>
+              {asking && (
+                <form className="canvas-ai-ask" onSubmit={(e) => { e.preventDefault(); void askAi(asking) }}>
+                  <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Tulis pertanyaanmu" aria-label="Pertanyaan untuk AI" maxLength={500} />
+                  <button type="submit" className="ghost-button" disabled={busy || aiBusy || question.trim() === ''}>Kirim</button>
+                </form>
+              )}
+              {selectedText.length > MAX_SELECTION_CHARS && <span className="canvas-ai-warn">Pilihan terlalu panjang (maksimal {MAX_SELECTION_CHARS.toLocaleString('id-ID')} karakter).</span>}
+              {dirty && <span className="canvas-ai-info">Simpan dulu agar AI membaca isi yang sama.</span>}
+            </div>
           )}
-        </div>
-      )}
+          {aiNote && <p className="canvas-note muted" role="status">{aiNote}</p>}
+          {isImage && summary.derivedFromId && (
+            <p className="canvas-note canvas-lineage muted">Variasi dari {sourceTitle ? `“${sourceTitle}”` : 'sumber yang sudah dihapus'}{summary.derivedFromVersion ? ` (v${summary.derivedFromVersion})` : ''}.</p>
+          )}
+          {isImage && variationOpen && viewing === null && (
+            dirty
+              ? <p className="canvas-note muted" role="status">Simpan dulu perubahanmu agar AI membuat variasi dari isi yang sama.</p>
+              : <VariationForm artifact={{ id: summary.id, title: loaded.title }} version={loaded.currentVersion} busy={aiBusy} onSubmit={async (prompt, count) => { await onAskImage(prompt, count); setVariationOpen(false) }} />
+          )}
+          {conflict && (
+            <div className="canvas-note canvas-conflict" role="alert">
+              <span>Artifact sudah berubah di tempat lain (mis. diperbarui AI). Penyimpananmu ditolak agar tidak menimpa.</span>
+              <button type="button" className="text-button" onClick={() => void copy()}>Salin edit saya</button>
+              <button type="button" className="text-button" onClick={() => void load()}>Muat versi terbaru</button>
+            </div>
+          )}
+          {stale && dirty && !conflict && (
+            <div className="canvas-note canvas-conflict" role="status">
+              <span>Versi terbaru di server (v{summary.currentVersion}) berbeda dari yang kamu edit.</span>
+              <button type="button" className="text-button" onClick={() => void load()}>Muat versi terbaru (buang edit)</button>
+            </div>
+          )}
 
-      {viewing && (
-        <div className="canvas-note canvas-conflict" role="status">
-          <span>Melihat v{viewing.version} (hanya baca).</span>
-          <button type="button" className="text-button" onClick={() => void restore(viewing.version)} disabled={busy || dirty}
-            title={dirty ? 'Simpan atau buang perubahanmu dulu' : 'Salin isi versi ini sebagai versi baru'}>Pulihkan versi ini</button>
-          <button type="button" className="text-button" onClick={() => setViewing(null)}>Kembali</button>
-        </div>
-      )}
+          {historyOpen && (
+            <div className="canvas-history">
+              {versions === null ? <p className="muted">Memuat riwayat…</p> : (
+                <ul>
+                  {versions.map((v) => (
+                    <li key={v.version} className={viewing?.version === v.version ? 'is-viewing' : undefined}>
+                      <span>v{v.version} · {sourceLabel(v.source)} · {formatTime(v.createdAt)} · {v.length.toLocaleString('id-ID')} karakter</span>
+                      {v.version === loaded.currentVersion ? <span className="muted">aktif</span> : (
+                        <button type="button" className="text-button" onClick={() => void view(v.version)}>Lihat</button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
-      <div className="canvas-content">
-        {isSheet ? (
-          <SpreadsheetView key={viewing ? `v${viewing.version}` : `c${sheetKey}`} value={viewing?.content ?? draft} readOnly={viewing !== null} title={titleDraft} onChange={setDraft} />
-        ) : isHtml && mode === 'preview' && !viewing ? (
-          <SandboxPreview source={draft} />
-        ) : viewing || mode === 'view' ? (
-          isImage ? <ImageView source={shown} baseName={fileName.replace(/\.svg$/, '')} />
-            : isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
-            : isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
-        ) : isCode || isDiagram || isImage ? (
-          <CodeTextarea value={draft} onChange={setDraft} onSelectionChange={(start, end) => setSelection({ start, end })} label={isDiagram ? 'Kode Mermaid' : isImage ? 'Kode SVG' : `Kode ${language}`} />
-        ) : (
-          <textarea className="canvas-text" value={draft} onChange={(e) => setDraft(e.target.value)} onSelect={(e) => setSelection({ start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd })} aria-label="Isi dokumen (Markdown)" spellCheck />
-        )}
+          {viewing && (
+            <div className="canvas-note canvas-conflict" role="status">
+              <span>Melihat v{viewing.version} (hanya baca).</span>
+              <button type="button" className="text-button" onClick={() => void restore(viewing.version)} disabled={busy || dirty}
+                title={dirty ? 'Simpan atau buang perubahanmu dulu' : 'Salin isi versi ini sebagai versi baru'}>Pulihkan versi ini</button>
+              <button type="button" className="text-button" onClick={() => setViewing(null)}>Kembali</button>
+            </div>
+          )}
+
+          <div className={isDoc ? 'canvas-content is-paper' : isCode ? 'canvas-content is-code' : 'canvas-content'}>
+            {isSheet ? (
+              <SpreadsheetView key={viewing ? `v${viewing.version}` : `c${sheetKey}`} value={viewing?.content ?? draft} readOnly={viewing !== null} title={titleDraft} onChange={setDraft} />
+            ) : isHtml && mode === 'preview' && !viewing ? (
+              <SandboxPreview source={draft} />
+            ) : viewing || mode === 'view' ? (
+              isImage ? <ImageView source={shown} baseName={fileName.replace(/\.svg$/, '')} />
+                : isDiagram ? <DiagramView source={shown} pngName={fileName.replace(/\.mmd$/, '.png')} />
+                : isCode ? <CodeView code={shown} language={language} changed={viewing ? null : changed} /> : <div className="canvas-doc"><Markdown text={shown} /></div>
+            ) : isCode || isDiagram || isImage ? (
+              <CodeTextarea value={draft} onChange={setDraft} onSelectionChange={(start, end) => setSelection({ start, end })} label={isDiagram ? 'Kode Mermaid' : isImage ? 'Kode SVG' : `Kode ${language}`} />
+            ) : (
+              <textarea className="canvas-text" value={draft} onChange={(e) => setDraft(e.target.value)} onSelect={(e) => setSelection({ start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd })} aria-label="Isi dokumen (Markdown)" spellCheck />
+            )}
+          </div>
+
+          <footer className="canvas-foot">
+            <span className="muted">{isCode ? `Kode · ${language}` : isDiagram ? 'Diagram · Mermaid' : isImage ? 'Gambar · SVG vektor' : isSheet ? 'Spreadsheet · Fortune-sheet' : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
+            {confirmDelete ? (
+              <span className="canvas-confirm">
+                Hapus artifact beserta semua versinya?
+                <button type="button" className="text-button" onClick={() => void remove()} disabled={busy}>Ya, hapus</button>
+                <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Batal</button>
+              </span>
+            ) : (
+              <button type="button" className="text-button" onClick={() => setConfirmDelete(true)}>Hapus</button>
+            )}
+          </footer>
+        </div>
       </div>
-
-      <footer className="canvas-foot">
-        <span className="muted">{isCode ? `Kode · ${language}` : isDiagram ? 'Diagram · Mermaid' : isImage ? 'Gambar · SVG vektor' : isSheet ? 'Spreadsheet · Fortune-sheet' : 'Dokumen · Markdown'} · {shown.length.toLocaleString('id-ID')} karakter</span>
-        {confirmDelete ? (
-          <span className="canvas-confirm">
-            Hapus artifact beserta semua versinya?
-            <button type="button" className="text-button" onClick={() => void remove()} disabled={busy}>Ya, hapus</button>
-            <button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Batal</button>
-          </span>
-        ) : (
-          <button type="button" className="text-button" onClick={() => setConfirmDelete(true)}>Hapus</button>
-        )}
-      </footer>
     </div>
   )
 }
@@ -473,7 +508,9 @@ type CanvasPanelProps = {
  */
 export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelect, onClose, onChanged, onAskAi, aiBusy }: CanvasPanelProps) {
   const [visited, setVisited] = useState<ReadonlySet<string>>(new Set())
-  const [showOtherKinds, setShowOtherKinds] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [actionsHost, setActionsHost] = useState<HTMLElement | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [dirtyIds, setDirtyIds] = useState<ReadonlySet<string>>(new Set())
   const [language, setLanguage] = useState<string>('text')
   const [creating, setCreating] = useState(false)
@@ -543,6 +580,7 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
   )
 
   const create = async (kind: ArtifactKind) => {
+    setMenuOpen(false)
     setCreating(true)
     setError(null)
     try {
@@ -571,25 +609,47 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
     onSelect(artifacts.find((a) => a.id !== id)?.id ?? null)
   }
 
-  // Tombol "buat baru" mengikuti konteks: artifact yang sedang dibuka menentukan jenis yang ditawarkan (diagram → hanya
-  // diagram). Tanpa artifact terpilih semua jenis tampil; jenis lain bisa dibuka lewat "Jenis lain…".
-  const shownKinds: ArtifactKind[] = !active || showOtherKinds ? NEW_KINDS : [active.kind]
+  // Menu "Artifact baru" mengikuti konteks: jenis artifact yang sedang dibuka tampil di atas, jenis lain di bawah
+  // pemisah. Tanpa artifact terpilih semua jenis tampil berurutan.
+  const orderedKinds: ArtifactKind[] = active ? [active.kind, ...NEW_KINDS.filter((k) => k !== active.kind)] : NEW_KINDS
 
-  const newButton = (kind: ArtifactKind) => {
+  // Menu ditutup oleh klik di luar atau Escape.
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
+  const menuItem = (kind: ArtifactKind) => {
     if (kind === 'gambar') {
       return (
-        <span key={kind} className="canvas-new-group">
-          <button type="button" className="ghost-button" onClick={() => setShowGenerate((o) => !o)} aria-expanded={showGenerate}>+ Gambar (AI)</button>
+        <div key={kind} className="canvas-menu-group">
+          <button type="button" role="menuitem" className="canvas-menu-item" onClick={() => { setShowGenerate((o) => !o); setMenuOpen(false) }}>{NEW_LABEL[kind]}</button>
           {(images.length > 0 || pending) && (
-            <button type="button" className="ghost-button" onClick={() => setShowGallery((o) => !o)} aria-pressed={showGallery}>Galeri ({images.length})</button>
+            <button type="button" role="menuitem" className="canvas-menu-item" onClick={() => { setShowGallery((o) => !o); setMenuOpen(false) }}>Galeri ({images.length})</button>
           )}
-        </span>
+        </div>
       )
     }
     return (
-      <button key={kind} type="button" className="ghost-button" onClick={() => void create(kind)} disabled={creating}>
-        + {NEW_LABEL[kind]}
-      </button>
+      <div key={kind} className="canvas-menu-row">
+        <button type="button" role="menuitem" className="canvas-menu-item" onClick={() => void create(kind)} disabled={creating}>{NEW_LABEL[kind]}</button>
+        {kind === 'kode' && (
+          <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
+            {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        )}
+      </div>
     )
   }
 
@@ -598,31 +658,31 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
       <header className="canvas-head">
         <div className="canvas-tabs" role="tablist" aria-label="Artifact">
           {artifacts.map((a) => (
-            <button key={a.id} type="button" role="tab" aria-selected={a.id === activeId} className="canvas-tab" onClick={() => onSelect(a.id)} title={a.title}>
-              <span className="canvas-tab-kind">{kindLabel(a.kind)}</span>
+            <button key={a.id} type="button" role="tab" aria-selected={a.id === activeId} className="canvas-tab" onClick={() => onSelect(a.id)} title={`${kindLabel(a.kind)} · ${a.title}`}>
               <span className="canvas-tab-title">{a.title}</span>
               {dirtyIds.has(a.id) && <span className="canvas-dirty" role="img" aria-label="Belum disimpan">•</span>}
             </button>
           ))}
         </div>
+        <div className="canvas-newwrap" ref={menuRef}>
+          <button type="button" className="icon-button" onClick={() => setMenuOpen((o) => !o)} aria-label="Artifact baru" title="Artifact baru" aria-haspopup="menu" aria-expanded={menuOpen}>
+            <Icon name="plus" />
+          </button>
+          {menuOpen && (
+            <div className="canvas-menu" role="menu" aria-label="Buat artifact baru">
+              {orderedKinds.slice(0, active ? 1 : orderedKinds.length).map(menuItem)}
+              {active && <div className="canvas-menu-sep" role="separator">Jenis lain</div>}
+              {active && orderedKinds.slice(1).map(menuItem)}
+            </div>
+          )}
+        </div>
+        <span className="canvas-head-spacer" />
+        <div className="canvas-head-actions" ref={setActionsHost} />
         <button type="button" className="icon-button" onClick={onClose} aria-label="Tutup Canvas" title="Tutup Canvas">
-          <Icon name="close" />
+          <Icon name="close" size={17} />
         </button>
       </header>
-      <div className="canvas-new">
-        {NEW_KINDS.filter((k) => shownKinds.includes(k)).map((k) => newButton(k))}
-        {shownKinds.includes('kode') && (
-          <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
-            {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-        )}
-        {active && (
-          <button type="button" className="text-button" onClick={() => setShowOtherKinds((o) => !o)} aria-expanded={showOtherKinds}>
-            {showOtherKinds ? 'Sembunyikan jenis lain' : 'Jenis lain…'}
-          </button>
-        )}
-        {error && <span className="error" role="alert">{error}</span>}
-      </div>
+      {error && <p className="error canvas-note" role="alert">{error}</p>}
       {showGenerate && <GenerateImageForm busy={aiBusy} onSubmit={askImage} />}
       {showGallery && (
         <ImageGallery images={images} all={artifacts} pending={pending && (aiBusy || images.length <= pending.baseline) ? pending.count : 0}
@@ -643,6 +703,7 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
           aiBusy={aiBusy}
           sourceTitle={a.derivedFromId ? (artifacts.find((x) => x.id === a.derivedFromId)?.title ?? null) : null}
           onAskImage={askImage}
+          actionsHost={actionsHost}
         />
       ))}
     </aside>
