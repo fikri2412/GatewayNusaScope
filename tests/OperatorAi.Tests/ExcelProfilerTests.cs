@@ -303,4 +303,34 @@ public class ExcelProfilerTests
         Assert.Equal("text", value.GetProperty("type").GetString());
         Assert.Equal("1,5", value.GetProperty("examples")[0].GetString());
     }
+
+    [Fact]
+    public void A_sparse_sheet_with_a_far_corner_cell_is_rejected_instead_of_scanning_billions_of_cells()
+    {
+        // Dua sel (A1 dan XFD1048576) = file kecil, tetapi baris x kolom yang dialamati ~1,7e10.
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Throws<OperatorAi.Shared.Storage.DocumentInputException>(() => ProfileWorkbook(workbook =>
+        {
+            var sheet = workbook.AddWorksheet("jarang");
+            sheet.Cell(1, 1).Value = "a";
+            sheet.Cell(XLHelper.MaxRowNumber, XLHelper.MaxColumnNumber).Value = "z";
+        }));
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(30), "penolakan harus segera, bukan setelah memindai sheet");
+    }
+
+    [Fact]
+    public void An_archive_that_expands_past_the_safety_limit_is_rejected_before_it_is_parsed()
+    {
+        using var content = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(content, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        {
+            using var entry = zip.CreateEntry("xl/worksheets/sheet1.xml", System.IO.Compression.CompressionLevel.Fastest).Open();
+            var zeros = new byte[1024 * 1024];
+            for (var i = 0; i < 210; i++) entry.Write(zeros); // ~210 MB terurai, beberapa ratus KB terkompresi
+        }
+        content.Position = 0;
+        Assert.True(content.Length < 5 * 1024 * 1024);
+
+        Assert.Throws<OperatorAi.Shared.Storage.DocumentInputException>(() => ExcelProfiler.Profile(content, "bomb.xlsx"));
+    }
 }

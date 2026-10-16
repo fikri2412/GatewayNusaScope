@@ -202,9 +202,19 @@ public sealed class QueueRepository
         ct = deadline.Token;
         await using var conn = await OpenAsync(ct);
         var table = isJob ? "jobs" : "queue_items";
-        return await conn.ExecuteAsync(new CommandDefinition(
-            $"UPDATE {table} SET locked_at = SYSUTCDATETIME() WHERE id = @id AND status = '{Statuses.Processing}' AND locked_by = @runId",
-            new { id, runId }, cancellationToken: ct)) == 1;
+        try
+        {
+            // LOCK_TIMEOUT: putaran tool TicketProcessor memegang kunci X atas baris ini sampai commit (guard kepemilikan
+            // di transaksinya). Heartbeat yang menunggu kunci itu berarti baris masih dipegang, bukan hilang, jadi
+            // tidak boleh menunggu sampai deadline lalu membatalkan tiket yang sehat.
+            return await conn.ExecuteAsync(new CommandDefinition(
+                $"SET LOCK_TIMEOUT 2000; UPDATE {table} SET locked_at = SYSUTCDATETIME() WHERE id = @id AND status = '{Statuses.Processing}' AND locked_by = @runId",
+                new { id, runId }, cancellationToken: ct)) == 1;
+        }
+        catch (SqlException ex) when (ex.Number == 1222)
+        {
+            return true; // lock-timeout: kehilangan tidak terbukti; detak berikutnya memeriksa lagi
+        }
     }
 
     /// <summary>Satu statement snapshot untuk report berkala; kegagalan dibawa ke caller, bukan hitungan nol palsu.</summary>

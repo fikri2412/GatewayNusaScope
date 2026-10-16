@@ -19,9 +19,20 @@ export function parseThinkingModes(raw: string | null): Record<string, ThinkingM
 
 const KEY = 'operator-ai.session'
 
+// sessionStorage bisa melempar (storage diblokir, mode privat lama): sesi tetap bertahan di memori selama halaman terbuka,
+// bukan membuat render gagal atau memaksa login ulang padahal server baru saja menerbitkan sesi yang sah.
+let fallback: string | null = null
+const storedRaw = (): string | null => {
+  try {
+    return sessionStorage.getItem(KEY) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
 /** null bila sesi tidak ada, rusak, atau sudah kedaluwarsa (isinya langsung dibuang). */
 export const loadSession = (): Session | null => {
-  const raw = sessionStorage.getItem(KEY)
+  const raw = storedRaw()
   if (!raw) return null
   try {
     const session = JSON.parse(raw) as Session
@@ -29,13 +40,28 @@ export const loadSession = (): Session | null => {
   } catch {
     // isi bukan JSON: diperlakukan seperti sesi yang tidak ada
   }
-  sessionStorage.removeItem(KEY)
+  clearSession()
   return null
 }
 
-export const saveSession = (session: Session) => sessionStorage.setItem(KEY, JSON.stringify(session))
+export const saveSession = (session: Session) => {
+  const raw = JSON.stringify(session)
+  fallback = raw
+  try {
+    sessionStorage.setItem(KEY, raw)
+  } catch {
+    // tetap di memori (fallback)
+  }
+}
 
-export const clearSession = () => sessionStorage.removeItem(KEY)
+export function clearSession() {
+  fallback = null
+  try {
+    sessionStorage.removeItem(KEY)
+  } catch {
+    // storage diblokir: tidak ada yang perlu dibuang
+  }
+}
 
 /** Token untuk header Authorization dan SignalR; null bila sesi tidak ada atau kedaluwarsa. */
 export const getToken = () => loadSession()?.token ?? null

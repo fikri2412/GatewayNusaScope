@@ -59,6 +59,33 @@ public class QueuePolicyTests : QueueTestBase
     }
 
     [Fact]
+    public async Task Heartbeat_blocked_by_the_runs_own_open_transaction_means_alive_not_lost()
+    {
+        var repo = NewRepo();
+        var id = await EnqueueAsync(await NewConversationAsync(), policy: Policy(staleLockMinutes: 1));
+        await repo.ClaimQueueItemAsync("run");
+
+        // Seperti RunToolsAsync: UPDATE guard menahan kunci X atas baris tiket sampai commit, selama tool berjalan.
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        await using var tx = (Microsoft.Data.SqlClient.SqlTransaction)await conn.BeginTransactionAsync();
+        await using (var guard = conn.CreateCommand())
+        {
+            guard.Transaction = tx;
+            guard.CommandText = "UPDATE queue_items SET locked_at = SYSUTCDATETIME() WHERE id = @id";
+            guard.Parameters.AddWithValue("@id", id);
+            Assert.Equal(1, await guard.ExecuteNonQueryAsync());
+        }
+
+        // Sebelumnya: menunggu 10 detik lalu LeaseLostException, padahal tiket tidak hilang.
+        await using var lease = await repo.KeepAliveAsync(id, "run", isJob: false, CancellationToken.None);
+
+        Assert.False(lease.Token.IsCancellationRequested);
+        await tx.CommitAsync();
+        Assert.True(await repo.CompleteQueueItemAsync(id, "run")); // kepemilikan tetap utuh
+    }
+
+    [Fact]
     public async Task Active_rows_without_origin_or_recovery_bounds_are_rejected_by_the_database()
     {
         var conversation = await NewConversationAsync();

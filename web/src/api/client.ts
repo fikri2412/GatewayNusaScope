@@ -3,7 +3,8 @@ import { clearSession, getToken, saveSession } from './session'
 import type { Session } from './session'
 import type { ActivityDto, AttachmentDto, AttachmentPolicyDto, ConversationDto, JobDto, MessageDto, ModelInfoDto, SendMessageResponse } from './types'
 
-export const API_URL = import.meta.env.VITE_API_URL as string
+// Tanpa VITE_API_URL (mis. `npm run build` produksi) permintaan relatif ke origin yang sama, bukan ke string "undefined".
+export const API_URL = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').replace(/\/+$/, '')
 
 /** Pesan untuk ditampilkan dari nilai yang dilempar (dipakai App, Composer, useConversation). */
 export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -59,6 +60,12 @@ async function tryRefresh(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Token untuk SignalR: sesi yang kedaluwarsa diperbarui dulu lewat refresh (single-flight) supaya reconnect tidak 401 terus. */
+export async function freshToken(): Promise<string> {
+  if (!getToken()) await tryRefresh()
+  return getToken() ?? ''
 }
 
 /**
