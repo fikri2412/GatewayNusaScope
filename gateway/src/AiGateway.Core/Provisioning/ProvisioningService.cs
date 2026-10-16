@@ -108,6 +108,13 @@ public sealed partial class ProvisioningService(
         if (!await db.Providers.AnyAsync(p => p.Id == providerId, ct)) throw GatewayException.NotFound("Provider");
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await RotateKeyCoreAsync(providerId, newApiKey, ct);
+        await tx.CommitAsync(ct);
+    }
+
+    /// <summary>Isi rotasi tanpa transaksi sendiri: pemanggil yang menyatukannya dengan perubahan lain membuka transaksinya.</summary>
+    private async Task RotateKeyCoreAsync(long providerId, string newApiKey, CancellationToken ct)
+    {
         var now = DateTime.UtcNow;
         foreach (var old in await db.ProviderCredentials.Where(c => c.ProviderId == providerId && c.Status == CredentialStatuses.Active).ToListAsync(ct))
         {
@@ -123,7 +130,6 @@ public sealed partial class ProvisioningService(
             db.ChangeTracker.Clear();
             throw GatewayException.Conflict("concurrent_update", "Kunci provider baru saja dirotasi oleh proses lain. Muat ulang lalu coba lagi.");
         }
-        await tx.CommitAsync(ct);
     }
 
     private ProviderCredential NewCredential(long providerId, string apiKey) => new()

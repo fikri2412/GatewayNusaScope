@@ -8,7 +8,7 @@ namespace AiGateway.Core.Provisioning;
 
 public sealed record ProviderPatch(
     string? Name = null, string? BaseUrl = null, bool? Enabled = null, string? AuthHeader = null, string? AuthPrefix = null,
-    string? ModelsPath = null, bool ClearModelsPath = false);
+    string? ModelsPath = null, bool ClearModelsPath = false, string? ApiKey = null);
 
 public sealed record ModelPatch(
     string? Description = null, bool? Enabled = null, int? MaxOutputTokens = null, bool ClearMaxOutputTokens = false,
@@ -34,10 +34,20 @@ public sealed partial class ProvisioningService
     public async Task<Provider> UpdateProviderAsync(long id, ProviderPatch patch, CancellationToken ct)
     {
         var p = await db.Providers.FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw GatewayException.NotFound("Provider");
-        if (patch.Name is not null) p.Name = RequireName(patch.Name, 100, "name");
+        // Key tersimpan terikat ke host tujuannya: ganti host hanya bersama key baru, dalam satu transaksi dengan perubahan URL.
         if (patch.BaseUrl is not null)
         {
             ValidateBaseUrl(patch.BaseUrl);
+            if (CredentialTarget.ChangesTarget(p.BaseUrl, patch.BaseUrl) && string.IsNullOrEmpty(patch.ApiKey))
+                throw GatewayException.BadRequest(CredentialTarget.RequiredCode, CredentialTarget.RequiredMessage);
+        }
+        if (patch.ApiKey is not null) ValidateApiKey(patch.ApiKey);
+        await using var tx = patch.ApiKey is not null ? await db.Database.BeginTransactionAsync(ct) : null;
+        if (patch.ApiKey is not null) await RotateKeyCoreAsync(p.Id, patch.ApiKey, ct);
+
+        if (patch.Name is not null) p.Name = RequireName(patch.Name, 100, "name");
+        if (patch.BaseUrl is not null)
+        {
             if (patch.BaseUrl != p.BaseUrl)
             {
                 p.BaseUrl = patch.BaseUrl;
@@ -66,6 +76,7 @@ public sealed partial class ProvisioningService
         }
         if (patch.Enabled is not null) p.Enabled = patch.Enabled.Value;
         await SaveConcurrentAsync("Nama provider sudah dipakai.", ct);
+        if (tx is not null) await tx.CommitAsync(ct);
         return p;
     }
 

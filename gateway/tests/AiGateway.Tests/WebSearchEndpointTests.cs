@@ -142,6 +142,25 @@ public class WebSearchEndpointTests(TestDb db) : GatewayTestBase(db)
     }
 
     [Fact]
+    public async Task Moving_a_search_provider_to_another_host_requires_a_new_key()
+    {
+        var (_, token) = await OwnerTenantAsync();
+        var id = await CreateAsync(token, new { type = SearchProviderTypes.Tavily, apiKey = "tvly-first-key-111111" });
+
+        var rejected = await SendAsync(HttpMethod.Put, $"/admin/providers/{id}", token, new { baseUri = "https://proxy.example.com" });
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Equal("credential_required_on_base_url_change", ErrorCode(await BodyAsync(rejected)));
+        var unchanged = await BodyAsync(await SendAsync(HttpMethod.Get, $"/admin/providers/{id}", token));
+        Assert.Equal(("https://api.tavily.com", "1111"), ((string)unchanged["baseUri"]!, (string)unchanged["keyHint"]!)); // tidak ada yang berubah
+
+        var accepted = await SendAsync(HttpMethod.Put, $"/admin/providers/{id}", token,
+            new { baseUri = "https://proxy.example.com", apiKey = "tvly-second-key-222222" });
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        var moved = await BodyAsync(await SendAsync(HttpMethod.Get, $"/admin/providers/{id}", token));
+        Assert.Equal(("https://proxy.example.com", "2222"), ((string)moved["baseUri"]!, (string)moved["keyHint"]!));
+    }
+
+    [Fact]
     public async Task Admin_can_crud_search_providers_with_defaults_and_masked_key()
     {
         var (_, token) = await OwnerTenantAsync();

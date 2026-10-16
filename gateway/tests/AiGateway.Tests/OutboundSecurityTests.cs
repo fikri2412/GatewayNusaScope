@@ -138,6 +138,7 @@ public class OutboundSecurityTests
         using var handler = OutboundSecurity.CreateHandler(sp);
         Assert.False(handler.AllowAutoRedirect);
         Assert.False(handler.UseProxy);
+        Assert.False(handler.UseCookies); // handler dipakai bersama semua tenant: tanpa cookie jar bersama
         Assert.NotNull(handler.ConnectCallback);
         Assert.Equal(100, handler.MaxConnectionsPerServer); // batas socket keluar per handler
         Assert.Equal(TimeSpan.FromSeconds(10), handler.ConnectTimeout); // connect menggantung tidak menunggu timeout 120 s

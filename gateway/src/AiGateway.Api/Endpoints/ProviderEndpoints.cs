@@ -16,7 +16,8 @@ public sealed record CreateProviderRequest(
     string? TemplateCode, string? Name, string? BaseUrl, string? ApiKey, string? AuthHeader, string? AuthPrefix, string? ModelsPath);
 
 public sealed record UpdateProviderRequest(
-    string? Name, string? BaseUrl, bool? Enabled, string? AuthHeader, string? AuthPrefix, string? ModelsPath, bool? ClearModelsPath);
+    string? Name, string? BaseUrl, bool? Enabled, string? AuthHeader, string? AuthPrefix, string? ModelsPath, bool? ClearModelsPath,
+    string? ApiKey = null);
 
 public sealed record RotateKeyRequest(string? ApiKey);
 
@@ -80,7 +81,7 @@ public static class ProviderEndpoints
     {
         var internalId = await ids.ProviderAsync(id, ct);
         await prov.UpdateProviderAsync(internalId,
-            new ProviderPatch(r.Name, r.BaseUrl, r.Enabled, r.AuthHeader, r.AuthPrefix, r.ModelsPath, r.ClearModelsPath == true), ct);
+            new ProviderPatch(r.Name, r.BaseUrl, r.Enabled, r.AuthHeader, r.AuthPrefix, r.ModelsPath, r.ClearModelsPath == true, r.ApiKey), ct);
         await audit.WriteAsync("provider.update", "provider", id.ToString(), new { fields = Changed(r) });
         return Results.Ok(await Query(db, id).FirstAsync(ct));
     }
@@ -133,6 +134,6 @@ public static class ProviderEndpoints
     private static string[] Changed(UpdateProviderRequest r) => new (string, bool)[]
     {
         ("name", r.Name is not null), ("baseUrl", r.BaseUrl is not null), ("enabled", r.Enabled is not null),
-        ("authHeader", r.AuthHeader is not null), ("authPrefix", r.AuthPrefix is not null), ("modelsPath", r.ModelsPath is not null || r.ClearModelsPath == true),
+        ("authHeader", r.AuthHeader is not null), ("authPrefix", r.AuthPrefix is not null), ("modelsPath", r.ModelsPath is not null || r.ClearModelsPath == true), ("apiKey", r.ApiKey is not null),
     }.Where(f => f.Item2).Select(f => f.Item1).ToArray();
 }

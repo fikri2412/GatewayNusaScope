@@ -268,8 +268,17 @@ function EditProviderModal({ provider, onClose, onSaved }: { provider: ProviderD
   const [authPrefix, setAuthPrefix] = useState(provider.authPrefix)
   const [modelsPath, setModelsPath] = useState(provider.modelsPath ?? '')
   const [clearModelsPath, setClearModelsPath] = useState(false)
+  const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Key tersimpan terikat ke hostnya: ganti skema/host/port hanya bersama key baru (server menolak sebaliknya).
+  const hostChanged = (() => {
+    try {
+      return new URL(baseUrl).origin.toLowerCase() !== new URL(provider.baseUrl).origin.toLowerCase()
+    } catch {
+      return false
+    }
+  })()
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -286,6 +295,7 @@ function EditProviderModal({ provider, onClose, onSaved }: { provider: ProviderD
         authPrefix,
         modelsPath: clearPath ? null : modelsPath.trim(),
         clearModelsPath: clearPath,
+        apiKey: apiKey.trim() || undefined,
       })
       onSaved()
     } catch (err) {
@@ -305,6 +315,11 @@ function EditProviderModal({ provider, onClose, onSaved }: { provider: ProviderD
         <Field label="Base URL">
           <input required type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
         </Field>
+        {hostChanged ? (
+          <Field label="API key baru (wajib karena host berubah)">
+            <input required type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          </Field>
+        ) : null}
         <Field label="Auth header">
           <input value={authHeader} onChange={(event) => setAuthHeader(event.target.value)} />
         </Field>

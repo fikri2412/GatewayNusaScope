@@ -206,6 +206,9 @@ public static class OutboundSecurity
         {
             AllowAutoRedirect = false,
             UseProxy = false,
+            // Tanpa cookie jar: handler ini dipakai bersama semua tenant, jadi Set-Cookie dari satu provider tidak
+            // boleh terbawa ke permintaan tenant lain.
+            UseCookies = false,
             // Batas per handler (global), bukan per tenant; batas konkurensi per tenant bukan di lapisan ini.
             MaxConnectionsPerServer = 100,
             ConnectTimeout = TimeSpan.FromSeconds(10),

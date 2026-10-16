@@ -3,6 +3,7 @@ using AiGateway.Core.Audit;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
 using AiGateway.Core.Domain;
+using AiGateway.Core.Provisioning;
 using AiGateway.Core.Security;
 using AiGateway.Core.WebSearch;
 using Microsoft.AspNetCore.Http;
@@ -162,12 +163,15 @@ public static class SearchProviderEndpoints
             var name = SearchProviderRegistry.NormalizeName(req.Name, config.Type);
             if (name != config.Name) { config.Name = name; changed.Add("name"); }
         }
+        var keyChanged = !string.IsNullOrWhiteSpace(req.ApiKey);
         if (!string.IsNullOrWhiteSpace(req.BaseUri))
         {
             var baseUri = registry.ResolveBaseUri(config.Type, req.BaseUri);
+            // Key tersimpan terikat ke host tujuannya: ganti host hanya bersama key baru di permintaan yang sama.
+            if (CredentialTarget.ChangesTarget(config.BaseUri, baseUri) && !keyChanged)
+                throw GatewayException.BadRequest(CredentialTarget.RequiredCode, CredentialTarget.RequiredMessage);
             if (baseUri != config.BaseUri) { config.BaseUri = baseUri; changed.Add("baseUri"); }
         }
-        var keyChanged = !string.IsNullOrWhiteSpace(req.ApiKey);
         if (keyChanged)
         {
             var apiKey = SearchProviderRegistry.RequireApiKey(req.ApiKey);
