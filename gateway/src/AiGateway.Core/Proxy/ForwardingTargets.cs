@@ -55,8 +55,23 @@ public sealed record ForwardingTargets(
             var rows = await db.CatalogModels.AsNoTracking()
                 .Where(c => c.ApiFamily != ApiFamilies.OpenAiChat && templateIds.Contains(c.TemplateId) && names.Contains(c.UpstreamModel))
                 .Select(c => new { c.TemplateId, c.UpstreamModel, c.ApiFamily }).ToListAsync(ct);
-            families = rows.ToDictionary(c => (c.TemplateId, c.UpstreamModel), c => c.ApiFamily);
+            families = rows.ToDictionary(c => (c.TemplateId, c.UpstreamModel), c => c.ApiFamily, FamilyKeyComparer.Instance);
         }
         return new ForwardingTargets(routes, providers, credentials, families);
+    }
+
+    /// <summary>
+    /// Kolasi SQL yang memilih baris katalog tidak membedakan huruf besar/kecil; pencarian di memori harus sama, kalau
+    /// tidak route ber-<c>upstream_model</c> berhuruf lain lolos dari penjagaan family (GA-08).
+    /// </summary>
+    private sealed class FamilyKeyComparer : IEqualityComparer<(long TemplateId, string UpstreamModel)>
+    {
+        public static readonly FamilyKeyComparer Instance = new();
+
+        public bool Equals((long TemplateId, string UpstreamModel) x, (long TemplateId, string UpstreamModel) y) =>
+            x.TemplateId == y.TemplateId && string.Equals(x.UpstreamModel, y.UpstreamModel, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((long TemplateId, string UpstreamModel) key) =>
+            HashCode.Combine(key.TemplateId, StringComparer.OrdinalIgnoreCase.GetHashCode(key.UpstreamModel));
     }
 }

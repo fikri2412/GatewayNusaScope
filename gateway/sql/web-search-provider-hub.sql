@@ -1,4 +1,5 @@
-﻿BEGIN TRANSACTION;
+﻿SET QUOTED_IDENTIFIER ON; -- filtered index di bawah; sqlcmd default OFF (tanpa -I) menggagalkan CREATE INDEX
+BEGIN TRANSACTION;
 IF NOT EXISTS (
     SELECT * FROM [__EFMigrationsHistory]
     WHERE [MigrationId] = N'20261014120000_AddSearchProviderHub'

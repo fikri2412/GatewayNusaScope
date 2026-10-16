@@ -120,6 +120,7 @@ public class UsageCompletenessTests(TestDb db) : GatewayTestBase(db)
         var reader = Translated(ApiFamilies.AnthropicMessages,
             Event("message_start",
                 """{"type":"message_start","message":{"id":"msg_1","model":"real","usage":{"input_tokens":10,"cache_read_input_tokens":4}}}""")
+            + Event("message_delta", """{"type":"message_delta","delta":{"stop_reason":"end_turn"}}""") // alasan selesai ada (GA-11), output_tokens tidak
             + Event("message_stop", """{"type":"message_stop"}"""));
 
         var usage = EmittedUsage(await ReadAllAsync(reader));
@@ -171,7 +172,7 @@ public class UsageCompletenessTests(TestDb db) : GatewayTestBase(db)
                 {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],
                  "usage":{"input_tokens":14,"input_tokens_details":{"cached_tokens":4},"output_tokens":7,
                           "output_tokens_details":{"reasoning_tokens":2},"total_tokens":21}}}
-                """.Replace("\n", "").Replace("  ", "")));
+                """.ReplaceLineEndings("").Replace("  ", "")));
 
         var usage = EmittedUsage(await ReadAllAsync(reader));
 

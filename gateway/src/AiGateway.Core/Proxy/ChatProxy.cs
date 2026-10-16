@@ -135,7 +135,8 @@ public sealed class ChatProxy(
                     sawUnsupportedFamily = true;
                     log.LogWarning("Route {RouteId} (provider {ProviderId}, model upstream {UpstreamModel}) memakai family '{Family}' yang tidak bisa diteruskan gateway; dilewati.",
                         route.Id, provider.Id, route.UpstreamModel, family);
-                    last = Failure(502, "unsupported_upstream_family",
+                    // ??=: kegagalan nyata dari route sebelumnya (mis. 429 + Retry-After) tidak boleh ditimpa route yang dilewati.
+                    last ??= Failure(502, "unsupported_upstream_family",
                         "The provider route uses an API family the gateway cannot forward.", retriable: true);
                     continue;
                 }

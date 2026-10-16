@@ -59,9 +59,12 @@ public class ProvisioningAdminTests(TestDb db) : GatewayTestBase(db)
             // Skema atau port berbeda juga tujuan lain.
             Assert.Equal("credential_required_on_base_url_change",
                 await CodeOf(() => prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://up1.test:8443/v1"), default)));
-            // Key baru yang tidak valid menggagalkan seluruh perubahan.
-            await Assert.ThrowsAsync<GatewayException>(() =>
-                prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1", ApiKey: "x"), default));
+            // Key baru yang tidak valid (karakter kontrol) menggagalkan seluruh perubahan.
+            Assert.Equal("invalid_api_key",
+                await CodeOf(() => prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1", ApiKey: "bad\tkey"), default)));
+            // Kegagalan SESUDAH rotasi (nama kosong) harus membatalkan rotasinya: URL dan key kembali seperti semula.
+            Assert.Equal("invalid_name",
+                await CodeOf(() => prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(Name: "", BaseUrl: "https://moved.test/v1", ApiKey: "key-for-moved-9999"), default)));
             return 0;
         });
 
