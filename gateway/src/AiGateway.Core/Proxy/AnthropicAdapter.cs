@@ -262,7 +262,15 @@ internal sealed class AnthropicAdapter : IFamilyAdapter
         if (prompt is not null) result["prompt_tokens"] = prompt.Value;
         if (completion is not null) result["completion_tokens"] = completion.Value;
         if (prompt is not null && completion is not null) result["total_tokens"] = prompt.Value + completion.Value;
-        if (cached is not null) result["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached.Value };
+        if (cached is not null || created is not null)
+        {
+            // cache_creation_tokens (tambahan, bukan bagian standar OpenAI) membawa jumlah cache-write terpisah dari
+            // cache-read supaya penagihan memakai harga tulis (GA-12); klien OpenAI mengabaikan field yang tidak dikenal.
+            var details = new JsonObject();
+            if (cached is not null) details["cached_tokens"] = cached.Value;
+            if (created is not null) details["cache_creation_tokens"] = created.Value;
+            result["prompt_tokens_details"] = details;
+        }
         return result;
     }
 

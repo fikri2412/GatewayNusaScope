@@ -278,10 +278,15 @@ internal sealed class ResponsesAdapter : IFamilyAdapter
         return result;
     }
 
+    /// <summary>
+    /// <c>incomplete</c> didahulukan dari tool call (GA-10): bila respons terpotong (mis. <c>max_output_tokens</c>), argumen
+    /// tool call bisa terpotong juga, jadi labelnya <c>length</c>/<c>content_filter</c>, bukan <c>tool_calls</c> yang
+    /// menyiratkan panggilan lengkap dan aman dieksekusi.
+    /// </summary>
     public static string FinishReason(JsonObject response, bool sawToolCall)
     {
-        if (sawToolCall) return "tool_calls";
-        if (Str(response["status"]) != "incomplete") return "stop";
-        return Str(Get(response["incomplete_details"], "reason")) == "content_filter" ? "content_filter" : "length";
+        if (Str(response["status"]) == "incomplete")
+            return Str(Get(response["incomplete_details"], "reason")) == "content_filter" ? "content_filter" : "length";
+        return sawToolCall ? "tool_calls" : "stop";
     }
 }

@@ -181,7 +181,9 @@ public sealed class ChatProxy(
             ReadUsage(usage, entry);
             var price = Pricing.Pick(prices, now, entry.InputTokens);
             if (price is null) return;
-            entry.Cost = Pricing.Cost(price, entry.InputTokens, entry.CachedTokens, entry.OutputTokens);
+            // Cache-write dibawa terpisah (adaptor Anthropic) supaya ditagih dengan harga tulis, bukan harga input biasa.
+            var cacheWrite = JsonAccess.TokenCount(Get(Get(usage, "prompt_tokens_details"), "cache_creation_tokens")) ?? 0;
+            entry.Cost = Pricing.Cost(price, entry.InputTokens, entry.CachedTokens, entry.OutputTokens, cacheWrite);
             entry.InputPriceUsed = price.InputPricePer1M;
             entry.OutputPriceUsed = price.OutputPricePer1M;
             entry.Currency = price.Currency;

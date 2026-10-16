@@ -109,6 +109,67 @@ public class ResponsesProxyTests(TestDb db) : FamilyProxyTestBase(db)
     }
 
     [Fact]
+    public async Task Streams_a_refusal_as_delta_refusal_instead_of_an_empty_answer()
+    {
+        var s = await SetupResponsesAsync();
+        Upstream.Respond = _ => Sse(
+            Event("response.created", """{"type":"response.created","response":{"id":"resp_1","model":"real-model","status":"in_progress"}}""")
+            + Event("response.refusal.delta", """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"Maaf, "}""")
+            + Event("response.refusal.delta", """{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"tidak bisa."}""")
+            + Event("response.completed", """{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":4}}}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+        var chunks = raw.Split('\n').Where(l => l.StartsWith("data: ") && l != "data: [DONE]").Select(l => JsonNode.Parse(l[6..])!).ToList();
+        var deltas = chunks.Select(c => c["choices"]!.AsArray().FirstOrDefault()?["delta"]).Where(d => d is not null).ToList();
+        Assert.Equal("Maaf, tidak bisa.", string.Concat(deltas.Select(d => (string?)d!["refusal"])));
+        Assert.DoesNotContain(deltas, d => !string.IsNullOrEmpty((string?)d!["content"])); // bukan jawaban teks
+    }
+
+    [Theory]
+    [InlineData("max_output_tokens", "length")]
+    [InlineData("content_filter", "content_filter")]
+    public async Task An_incomplete_response_wins_over_tool_calls_in_the_finish_reason(string reason, string expected)
+    {
+        var s = await SetupResponsesAsync();
+        Upstream.Respond = _ => FakeUpstream.Json(200, $$"""
+            {"id":"resp_1","object":"response","created_at":1700000000,"status":"incomplete","incomplete_details":{"reason":"{{reason}}"},"model":"real-model",
+             "output":[{"type":"function_call","id":"fc_1","call_id":"call_9","name":"get_time","arguments":"{\"tz\":\"Asia/Jak"}],
+             "usage":{"input_tokens":15,"output_tokens":20}}
+            """);
+
+        var response = await PostChatAsync(s.ApiKey, ToolConversation);
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, (string?)body["choices"]![0]!["finish_reason"]); // bukan tool_calls: argumennya terpotong
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.Equal(expected, (await ctx.UsageLogs.SingleAsync()).FinishReason);
+    }
+
+    [Fact]
+    public async Task A_streamed_incomplete_response_with_a_tool_call_is_labelled_length()
+    {
+        var s = await SetupResponsesAsync();
+        Upstream.Respond = _ => Sse(
+            Event("response.created", """{"type":"response.created","response":{"id":"resp_1","model":"real-model","status":"in_progress"}}""")
+            + Event("response.output_item.added", """{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"get_time","arguments":""}}""")
+            + Event("response.function_call_arguments.delta", """{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"tz\":\"Asia/Jak"}""")
+            + Event("response.incomplete", """{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"call_9","name":"get_time","arguments":"{\"tz\":\"Asia/Jak"}],"usage":{"input_tokens":14,"output_tokens":7}}}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\"}}]"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        var chunks = raw.Split('\n').Where(l => l.StartsWith("data: ") && l != "data: [DONE]").Select(l => JsonNode.Parse(l[6..])!).ToList();
+        var finishes = chunks.Select(c => (string?)c["choices"]!.AsArray().FirstOrDefault()?["finish_reason"]).Where(f => f is not null).ToList();
+        Assert.Equal(new[] { "length" }, finishes.ToArray());
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.Equal("length", (await ctx.UsageLogs.SingleAsync()).FinishReason);
+    }
+
+    [Fact]
     public async Task Keeps_inline_image_parts_and_assistant_history_parts_instead_of_flattening_them()
     {
         var s = await SetupResponsesAsync();
