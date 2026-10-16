@@ -11,6 +11,8 @@ import type { ArtifactSummary } from '../api/types'
 export function useArtifacts(conversationId: string, refreshKey: number) {
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Daftar sudah pernah dimuat; sebelum itu `[]` hanya nilai awal, bukan "percakapan tanpa artifact".
+  const [loaded, setLoaded] = useState(false)
   const latest = useRef(0)
 
   const reload = useCallback(
@@ -20,6 +22,7 @@ export function useArtifacts(conversationId: string, refreshKey: number) {
         .then((rows) => {
           if (ticket !== latest.current) return
           setArtifacts(rows)
+          setLoaded(true)
           setError(null)
         })
         .catch((e: unknown) => {
@@ -35,5 +38,5 @@ export function useArtifacts(conversationId: string, refreshKey: number) {
   }, [reload])
   useEffect(refresh, [refresh, refreshKey])
 
-  return { artifacts, error, reload }
+  return { artifacts, loaded, error, reload }
 }

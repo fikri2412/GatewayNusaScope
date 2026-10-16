@@ -84,11 +84,18 @@
 .canvas-confirm { display: inline-flex; align-items: center; gap: 10px; color: var(--ns-danger); }
 
 /* Kartu referensi artifact di bawah jawaban AI. */
-.artifact-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: -14px; }
-.artifact-card { display: inline-flex; align-items: center; gap: 10px; max-width: 100%; min-height: 44px; padding: 8px 14px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); font-family: inherit; font-size: var(--ns-text-base-sm); color: var(--ns-text); cursor: pointer; text-align: left; }
-.artifact-card:hover { background: var(--ns-surface-2); }
-.artifact-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.artifact-card-meta { color: var(--ns-text-muted); font-size: var(--ns-text-sm); flex-shrink: 0; }
+.artifact-cards { display: flex; flex-direction: column; gap: 8px; margin-top: -14px; }
+.artifact-card { display: flex; align-items: center; gap: 14px; width: 100%; max-width: 480px; padding: 12px 16px 12px 12px; border: 1px solid var(--ns-border); border-radius: 16px; background: var(--ns-surface); font-family: inherit; color: var(--ns-text); cursor: pointer; text-align: left; }
+.artifact-card:hover { border-color: var(--ns-accent); }
+.artifact-card[aria-current="true"] { border-color: var(--ns-accent); box-shadow: 0 0 0 3px var(--ns-accent-tint); }
+.artifact-card-tile { display: flex; align-items: center; justify-content: center; width: 48px; height: 56px; border-radius: 10px; background: var(--ns-surface-2); color: var(--ns-text-3); flex-shrink: 0; }
+.artifact-card.kind-kode .artifact-card-tile { background: var(--ns-model-minimax-tint); color: var(--ns-model-minimax); }
+.artifact-card.kind-diagram .artifact-card-tile { background: var(--ns-accent-tint); color: var(--ns-accent); }
+.artifact-card.kind-gambar .artifact-card-tile { background: var(--ns-model-glm-tint); color: var(--ns-model-glm); }
+.artifact-card.kind-spreadsheet .artifact-card-tile { background: var(--ns-accent-tint-2); color: var(--ns-accent); }
+.artifact-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.artifact-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ns-text-md); font-weight: 600; }
+.artifact-card-meta { color: var(--ns-text-muted); font-size: var(--ns-text-base-sm); }
 
 @media (max-width: 720px) {
   /* Layar sempit: Canvas yang terbuka menggantikan chat (tutup Canvas untuk kembali); ditumpuk di bawah chat

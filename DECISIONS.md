@@ -1076,3 +1076,13 @@ Keluhan: konsep (`ChatbotUiConcept/.../screens/04-canvas.html`) menampilkan satu
 - **Perubahan perilaku:** dokumen buatan AI (`sourceMessageId` ada) kini dibuka sebagai hasil (kertas), bukan textarea; dokumen buatan sendiri tetap dibuka untuk diedit. Toolbar AI tetap hanya muncul di mode Edit. Kontrol tampilan kini segmen (memilih segmen yang sedang aktif tidak melakukan apa-apa), bukan toggle.
 - **Belum disamakan (di luar panel):** kerangka aplikasi. Konsep memakai bar tab sesi di atas, aplikasi nyata memakai sidebar daftar percakapan; chat dan composer juga belum dicocokkan piksel demi piksel. Tidak ada perubahan backend.
 - **Verifikasi:** `tsc`, lint, `npm run build`, `check:canvas` bersih; e2e Canvas di Chromium (API tiruan) 117/117, termasuk uji menu `+`, header, dan kertas dokumen AI. Skrip e2e disesuaikan dengan layout baru.
+
+## 2026-10-16 — Canvas tanpa tombol di header; terbuka lewat kartu atau otomatis (seperti Claude)
+
+Permintaan: tombol "Canvas (n)" jangan selalu tampil di atas; mode Canvas mengikuti format yang dibuat.
+
+- **Tombol header dihapus.** Canvas dibuka dengan (a) mengklik kartu artifact di bawah jawaban AI, atau (b) otomatis saat AI baru membuat artifact di sesi yang sedang dibuka. Memuat riwayat percakapan tidak membuka Canvas sendiri (`useArtifacts` kini mengembalikan `loaded`; id yang sudah ada saat pemuatan pertama dianggap "sudah dikenal"). Bila AI membuat beberapa sekaligus (mis. 3 gambar), yang terbaru dipilih. Artifact buatan sendiri tidak membuka Canvas (panel sudah terbuka saat dibuat).
+- **Kartu artifact** (`ArtifactCard`) meniru gaya Claude: ubin berikon per jenis (kode `</>`, dokumen, diagram, spreadsheet, gambar; tiap jenis punya tint), judul tebal, keterangan "Kode · SQL" / "Dokumen" / ... (+ `· vN` hanya bila sudah lebih dari v1). Kartu artifact yang sedang terbuka diberi cincin aksen.
+- **Tetap bisa dijangkau tanpa tombol:** artifact yang tidak punya kartu di chat (buatan sendiri, atau milik jawaban alternatif) dimunculkan sebagai kartu di akhir daftar pesan, jadi menutup Canvas tidak membuat artifact hilang dari jangkauan.
+- **Konsekuensi:** percakapan tanpa artifact tidak punya jalan manual membuka Canvas kosong; artifact pertama datang dari AI (sesuai aturan `OperatorPrompt`: hanya untuk isi panjang/terstruktur). Menu `+` untuk membuat artifact sendiri tetap ada setelah Canvas terbuka. Bila ingin pintu manual lagi, tempat yang cocok adalah menu lampiran di composer, bukan header.
+- **Verifikasi:** `tsc`, lint, `npm run build` bersih; e2e Canvas (Chromium + API tiruan) 120/120, termasuk: header tanpa tombol Canvas, Canvas tertutup saat riwayat dimuat, terbuka otomatis saat AI membuat gambar, artifact buatan sendiri dibuka lagi lewat kartu dengan draf utuh.
