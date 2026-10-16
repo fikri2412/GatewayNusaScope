@@ -29,11 +29,75 @@ public class ProvisioningAdminTests(TestDb db) : GatewayTestBase(db)
             Assert.Equal("invalid_models_path", await CodeOf(() => prov.UpdateProviderAsync(other.Id, new ProviderPatch(ModelsPath: "../etc"), default)));
 
             var changed = await prov.UpdateProviderAsync(other.Id,
-                new ProviderPatch(Name: "renamed", BaseUrl: "https://three.test/v1", Enabled: false, AuthHeader: "x-key", ClearModelsPath: true), default);
+                new ProviderPatch(Name: "renamed", BaseUrl: "https://three.test/v1", Enabled: false, AuthHeader: "x-key", ClearModelsPath: true,
+                    ApiKey: "key-for-three-0001"), default); // host berubah: key baru wajib (lihat test khusus di bawah)
             Assert.Equal(("renamed", "https://three.test/v1", false, "x-key", "Token ", null),
                 (changed.Name, changed.BaseUrl, changed.Enabled, changed.AuthHeader, changed.AuthPrefix, changed.ModelsPath));
             return 0;
         });
+    }
+
+    private async Task<(string? Url, int ActiveKeys, string? Hint)> StateAsync(Scenario s) =>
+        await WithServicesAsync(s.TenantId, async (_, db) =>
+        {
+            var provider = await db.Providers.AsNoTracking().SingleAsync(p => p.Id == s.ProviderId);
+            var active = await db.ProviderCredentials.AsNoTracking().Where(c => c.ProviderId == s.ProviderId && c.Status == CredentialStatuses.Active).ToListAsync();
+            return ((string?)provider.BaseUrl, active.Count, active.SingleOrDefault()?.KeyHint);
+        });
+
+    [Fact]
+    public async Task Moving_a_provider_to_another_host_requires_a_new_key_and_changes_nothing_without_it()
+    {
+        var s = await SetupAsync();
+        var before = await StateAsync(s);
+
+        await InTenantAsync(s, async (prov, _) =>
+        {
+            // Tanpa key baru: ditolak, key lama tidak boleh ikut dikirim ke host lain.
+            Assert.Equal("credential_required_on_base_url_change",
+                await CodeOf(() => prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://attacker.example/v1"), default)));
+            // Skema atau port berbeda juga tujuan lain.
+            Assert.Equal("credential_required_on_base_url_change",
+                await CodeOf(() => prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://up1.test:8443/v1"), default)));
+            // Key baru yang tidak valid menggagalkan seluruh perubahan.
+            await Assert.ThrowsAsync<GatewayException>(() =>
+                prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1", ApiKey: "x"), default));
+            return 0;
+        });
+
+        Assert.Equal(before, await StateAsync(s)); // URL dan key aktif tidak berubah sama sekali
+    }
+
+    [Fact]
+    public async Task Moving_a_provider_with_a_new_key_changes_the_url_and_rotates_the_key_together()
+    {
+        var s = await SetupAsync();
+
+        await InTenantAsync(s, async (prov, _) =>
+        {
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1", ApiKey: "key-for-moved-9999"), default);
+            return 0;
+        });
+
+        var after = await StateAsync(s);
+        Assert.Equal(("https://moved.test/v1", 1, "9999"), after);
+    }
+
+    [Theory]
+    [InlineData("https://UP1.test/v2")]        // host sama (huruf besar/kecil tidak dibedakan), hanya path berbeda
+    [InlineData("https://up1.test/other/path")]
+    public async Task A_path_only_change_stays_on_the_same_host_and_needs_no_new_key(string newUrl)
+    {
+        var s = await SetupAsync(baseUrl: "https://up1.test/v1");
+
+        await InTenantAsync(s, async (prov, _) =>
+        {
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: newUrl), default);
+            return 0;
+        });
+
+        var after = await StateAsync(s);
+        Assert.Equal((newUrl, 1), (after.Url, after.ActiveKeys)); // key lama tetap aktif
     }
 
     [Fact]
@@ -177,7 +241,7 @@ public class ProvisioningAdminTests(TestDb db) : GatewayTestBase(db)
             await prov.RotateProviderKeyAsync(s.ProviderId, "key-for-rotated-0001", default);
             Assert.Equal((true, true, true), (model.SupportsTools, model.SupportsStreaming, model.SupportsVision));
 
-            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1"), default);
+            await prov.UpdateProviderAsync(s.ProviderId, new ProviderPatch(BaseUrl: "https://moved.test/v1", ApiKey: "key-for-moved-0001"), default);
             Assert.Equal((null, null, null), (model.SupportsTools, model.SupportsStreaming, model.SupportsVision)); // target berubah: konfirmasi hangus
             Assert.Equal((true, null, true), (spareModel.SupportsTools, spareModel.SupportsStreaming, spareModel.SupportsVision)); // route ke provider lain utuh
 
