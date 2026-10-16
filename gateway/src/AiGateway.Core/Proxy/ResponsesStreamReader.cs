@@ -57,6 +57,12 @@ internal sealed class ResponsesStreamReader(TextReader upstream) : ChatChunkRead
                 Emit(Chunk(new JsonObject { ["content"] = Str(e["delta"]) ?? "" }, null));
                 break;
 
+            case "response.refusal.delta":
+                // GA-09: penolakan model mengalir sebagai delta.refusal (seperti Chat Completions), bukan jawaban kosong.
+                EnsureStarted();
+                Emit(Chunk(new JsonObject { ["refusal"] = Str(e["delta"]) ?? "" }, null));
+                break;
+
             case "response.function_call_arguments.delta" when _toolIndexByOutput.TryGetValue(LongOf(e["output_index"]) ?? -1, out var toolIndex):
                 Emit(Chunk(new JsonObject
                 {

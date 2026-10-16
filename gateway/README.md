@@ -250,7 +250,8 @@ curl -N -s -X POST "$BASE/v1/chat/completions" \
 | Minta usage ke upstream | Gateway **selalu** mengirim `stream_options.include_usage = true`; penagihan butuh chunk usage terakhir |
 | Sembunyikan chunk usage | Chunk usage-saja (`choices: []`) hanya diteruskan bila **klien** mengirim `stream_options.include_usage: true`; bila tidak, `usage` juga dihapus dari chunk biasa |
 | Baris lain | `: comment`, `event:`, `id:`, `retry:` dan `data:` non-JSON diteruskan apa adanya; `data: [DONE]` menutup stream (ditambahkan gateway bila upstream menutup tanpa mengirimnya tetapi `finish_reason` sudah terlihat) |
-| Fallback | Hanya **sebelum** event pertama terkirim: stream kosong atau event pertama berisi `error` → route berikutnya dicoba; setelah itu tidak ada fallback |
+| Fallback | Hanya **sebelum** event pertama terkirim: stream kosong, event pertama berisi `error`, atau upstream menjawab sukses dengan **bukan** `text/event-stream` (mis. JSON karena `stream:true` diabaikan → `upstream_protocol_mismatch`) → route berikutnya dicoba; setelah itu tidak ada fallback. Klien yang meminta SSE tidak pernah menerima JSON sukses diam-diam |
+| Family route | Route yang katalog template-nya berfamily tidak didukung (`google_generate`) tidak dikirim ke provider: dilewati (log + fallback ke route lain); bila tak ada route lain → `502 unsupported_upstream_family` (`denied_reason` sama). `/v1/models` melaporkan `readiness.available=false` untuk model yang hanya punya route seperti itu. Provider custom tanpa template tetap diteruskan sebagai Chat Completions |
 | Error upstream | Payload `error` setelah commit diteruskan sekali lalu stream ditutup; `[DONE]` berikutnya tidak diteruskan atau mengubah status menjadi sukses |
 | Konkurensi | Slot `Proxy:MaxConcurrentPerTenant` ditahan selama stream berjalan dan dilepas saat stream berakhir (termasuk klien putus) |
 
@@ -278,9 +279,28 @@ Pencatatan pemakaian:
   `{"streamed":true,"content":"<teks jawaban>",...}` (teks dibatasi 100.000 karakter); pada klien putus di tengah
   stream, isinya adalah teks parsial yang sudah diterima.
 
-Catatan reverse proxy: `X-Accel-Buffering: no` sudah dikirim agar nginx tidak menahan event; proxy lain (IIS/ARR, dan lain-lain)
-harus mematikan response buffering/kompresi untuk SSE, dan timeout baca proxy harus lebih besar dari
+Catatan reverse proxy: gateway sendiri sudah mematikan buffering server (`DisableBuffering` sebelum header dikirim) dan
+mengirim `X-Accel-Buffering: no` agar nginx tidak menahan event; aplikasi tidak memasang kompresi respons. Proxy di depannya
+tetap harus mematikan response buffering/kompresi untuk SSE, dan timeout baca proxy harus lebih besar dari
 `Proxy:UpstreamTimeoutSeconds` (jeda antar baris) dan `Proxy:MaxStreamSeconds` (durasi total).
+
+Pengaturan proxy berikut **belum diverifikasi** di lingkungan nyata (nama direktif perlu dicek terhadap versi proxy yang dipakai):
+
+- nginx: `proxy_buffering off;` `gzip off;` (di location gateway) dan `proxy_read_timeout` lebih besar dari `Proxy:MaxStreamSeconds`.
+- IIS + ARR: *Server Proxy Settings → Response buffer threshold = 0 KB*, nonaktifkan *dynamic compression* untuk `text/event-stream`, dan naikkan *Time-out* ARR.
+- Azure Front Door / API Management / CDN lain: pastikan respons `text/event-stream` tidak di-cache atau di-buffer menurut dokumentasi layanan tersebut.
+
+Uji nyata di belakang proxy yang benar-benar dipakai (bukan `localhost` langsung): jalankan permintaan streaming yang menghasilkan jawaban
+panjang dan beri stempel waktu per baris. Event harus tiba **bertahap**, bukan sekaligus di akhir:
+
+```bash
+curl -N -s -X POST "$PROXY_BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $GW_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Tulis 300 kata tentang laut."}],"stream":true}' \
+| while IFS= read -r line; do printf '%s %s\n' "$(date +%T.%N)" "$line"; done
+```
+
+Bandingkan dengan panggilan langsung ke gateway: bila stempel waktu di belakang proxy menumpuk di satu detik yang sama di akhir, proxy masih melakukan buffering.
 
 ## 11. Contoh integrasi
 

@@ -83,8 +83,23 @@ public class RoutingAndPricingTests
         Assert.All(Enumerable.Range(0, 20), _ => Assert.Equal(2, RouteSelector.Order(routes, rng).Count));
     }
 
-    private static ModelPrice Price(DateTime from, int min, decimal input, decimal output, decimal? cacheRead = null) =>
-        new() { EffectiveFrom = from, MinInputTokens = min, InputPricePer1M = input, OutputPricePer1M = output, CacheReadPricePer1M = cacheRead };
+    private static ModelPrice Price(DateTime from, int min, decimal input, decimal output, decimal? cacheRead = null, decimal? cacheWrite = null) =>
+        new() { EffectiveFrom = from, MinInputTokens = min, InputPricePer1M = input, OutputPricePer1M = output, CacheReadPricePer1M = cacheRead, CacheWritePricePer1M = cacheWrite };
+
+    [Fact]
+    public void Cost_bills_cache_write_tokens_at_the_cache_write_price_exactly_once()
+    {
+        var price = Price(DateTime.UtcNow, 0, 1m, 2m, cacheRead: 0.1m, cacheWrite: 1.25m);
+
+        // 3 baru x 1 + 4 cache read x 0.1 + 3 cache write x 1.25 + 20 output x 2 = 47.15 per juta
+        Assert.Equal(0.00004715m, Pricing.Cost(price, inputTokens: 10, cachedTokens: 4, outputTokens: 20, cacheWriteTokens: 3));
+        // tanpa harga cache write: ditagih harga input (3 x 1), bukan nol dan bukan ganda
+        Assert.Equal(0.0000464m, Pricing.Cost(Price(DateTime.UtcNow, 0, 1m, 2m, cacheRead: 0.1m), 10, 4, 20, cacheWriteTokens: 3));
+        // tanpa cache write sama sekali: perilaku lama tidak berubah
+        Assert.Equal(Pricing.Cost(price, 10, 4, 20), Pricing.Cost(price, 10, 4, 20, cacheWriteTokens: 0));
+        // cache write tidak boleh melebihi sisa prompt (input - cache read): 6 token tersisa
+        Assert.Equal(Pricing.Cost(price, 10, 4, 0, cacheWriteTokens: 6), Pricing.Cost(price, 10, 4, 0, cacheWriteTokens: 999));
+    }
 
     [Fact]
     public void Cost_bills_cached_prompt_tokens_at_the_cache_read_price()

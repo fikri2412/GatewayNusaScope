@@ -36,6 +36,12 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
     private static string Sse(params string[] payloads) =>
         string.Concat(payloads.Select(p => p == "[DONE]" ? "data: [DONE]\n\n" : $"data: {p}\n\n"));
 
+    /// <summary>
+    /// Satu event dengan JSON dipecah di beberapa baris <c>data:</c> (valid menurut spesifikasi SSE: digabung dengan
+    /// <c>\n</c>). Hanya untuk JSON yang tidak punya koma di dalam string.
+    /// </summary>
+    private static string MultiLineSse(string json) => "data: " + json.Replace(",", ",\ndata: ") + "\n\n";
+
     // --- transport --------------------------------------------------------------------------
 
     private static HttpRequestMessage BuildRequest(string apiKey, string json)
@@ -375,12 +381,73 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal((UsageStatuses.Denied, "model_not_allowed:key"), (log.Status, log.DeniedReason));
     }
 
+    // --- data: multi-baris (GA-05) -----------------------------------------------------------
+
+    [Fact]
+    public async Task Multi_line_data_events_get_the_tenant_alias_and_their_usage_is_billed()
+    {
+        var s = await SetupAsync(alias: Alias);
+        Upstream.Respond = _ => CompletedSse(MultiLineSse(Delta("c1", "ha")) + MultiLineSse(Finish("c2"))
+            + MultiLineSse(UsageChunk) + "data: [DONE]\n\n");
+
+        var (_, reader) = await StartStreamAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var events = await DrainAsync(reader);
+
+        Assert.Equal(3, events.Count); // delta, finish, [DONE]; chunk usage-saja dibuang karena klien tidak memintanya
+        Assert.Equal("ha", ChunkContent(events[0].Json));
+        Assert.Equal("stop", ChunkFinish(events[1].Json));
+        Assert.All(events.Take(2), e => Assert.Equal(Alias, (string?)e.Json!["model"])); // bukan "real-model" milik upstream
+        Assert.All(events, e => Assert.Single(e.Lines)); // keluaran dinormalisasi menjadi satu baris data per event
+        var log = await LogAsync(s.TenantId);
+        Assert.Equal((UsageStatuses.Ok, 10, 20), (log.Status, log.InputTokens, log.OutputTokens));
+    }
+
+    [Fact]
+    public async Task Comment_event_id_and_retry_lines_do_not_break_a_multi_line_data_event()
+    {
+        var s = await SetupAsync(alias: Alias);
+        Upstream.Respond = _ => CompletedSse(": ping\nevent: update\nid: 9\nretry: 100\n" + MultiLineSse(Delta("c1", "ha"))
+            + MultiLineSse(Finish("c2")) + "data: [DONE]\n\n");
+
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(": ping\n", raw);
+        Assert.Contains("event: update\n", raw);
+        Assert.Contains("id: 9\n", raw);
+        Assert.Contains("retry: 100\n", raw);
+        Assert.Contains("\"model\":\"gpt-stream\"", raw);
+        Assert.DoesNotContain("real-model", raw);
+        Assert.DoesNotContain("\n\n\n", raw); // batas event tetap satu baris kosong
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+    }
+
+    [Fact]
+    public async Task Incomplete_multi_line_json_is_forwarded_as_is_and_the_stream_continues()
+    {
+        var s = await SetupAsync(alias: Alias);
+        // Event kedua dimulai seperti JSON tetapi tidak pernah lengkap: diperlakukan seperti data tak valid biasa.
+        Upstream.Respond = _ => CompletedSse(Sse(Delta("c1", "ha"))
+            + "data: {\"id\":\"x\",\ndata: \"oops\"\n\n"
+            + Sse(Finish("c2"), "[DONE]"));
+
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("data: {\"id\":\"x\",\ndata: \"oops\"\n\n", raw); // diteruskan apa adanya, termasuk batas eventnya
+        Assert.Contains("\"content\":\"ha\"", raw);
+        Assert.Contains("\"finish_reason\":\"stop\"", raw);
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+        Assert.Equal(UsageStatuses.Ok, (await LogAsync(s.TenantId)).Status);
+    }
+
     // --- fallback sebelum commit ------------------------------------------------------------
 
     [Theory]
     [InlineData("http_500")]
     [InlineData("empty_stream")]
     [InlineData("first_event_error")]
+    [InlineData("first_event_multiline_error")]
     public async Task Fallback_before_commit_switches_to_the_next_route(string failure)
     {
         var s = await SetupAsync(alias: Alias);
@@ -393,6 +460,7 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
             {
                 "http_500" => FakeUpstream.Json(500, "{}"),
                 "empty_stream" => EmptySse(),
+                "first_event_multiline_error" => CompletedSse(MultiLineSse("""{"error":{"message":"boom","code":"upstream_stream_error"}}""")),
                 _ => CompletedSse(Sse("""{"error":{"message":"boom","code":"upstream_stream_error"}}""")),
             };
         };
@@ -433,19 +501,56 @@ public class ProxyStreamingTests(TestDb db) : GatewayTestBase(db)
         Assert.Equal((UsageStatuses.Error, upstreamStatus, expectedStatus), (log.Status, log.UpstreamStatus, log.HttpStatus));
     }
 
+    // GA-07: kontrak lama (upstream yang mengabaikan stream:true diturunkan diam-diam jadi respons REST) diganti:
+    // klien yang meminta SSE tidak boleh menerima JSON sukses.
+    [Theory]
+    [InlineData("application/json")]
+    [InlineData("application/x-ndjson")]
+    public async Task Upstream_answering_a_stream_request_with_a_non_event_stream_is_a_protocol_mismatch(string mediaType)
+    {
+        var s = await SetupAsync(alias: Alias);
+        Upstream.Respond = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(FakeUpstream.OkBody, Encoding.UTF8, mediaType) };
+
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("upstream_protocol_mismatch", ErrorCode(JsonNode.Parse(body)!));
+        Assert.DoesNotContain("chatcmpl-1", body); // isi jawaban upstream tidak bocor ke klien
+        var log = await LogAsync(s.TenantId);
+        Assert.Equal((UsageStatuses.Error, 200, 502, 0), (log.Status, log.UpstreamStatus, log.HttpStatus, log.InputTokens));
+    }
+
     [Fact]
-    public async Task Upstream_that_ignores_stream_returns_buffered_json()
+    public async Task Protocol_mismatch_before_commit_falls_back_to_the_next_route()
+    {
+        var s = await SetupAsync(alias: Alias);
+        await AddSecondRouteAsync(s);
+        Upstream.Respond = c => c.Uri.Host == "up1.test"
+            ? FakeUpstream.Json(200, FakeUpstream.OkBody) // up1 mengabaikan stream:true
+            : CompletedSse(Sse(Delta("c9", "fallback"), Finish("c10"), "[DONE]"));
+
+        var (response, reader) = await StartStreamAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var events = await DrainAsync(reader);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("fallback", ChunkContent(events[0].Json));
+        var log = await LogAsync(s.TenantId);
+        Assert.Equal((UsageStatuses.Ok, 2, true), (log.Status, log.Attempts, log.FallbackUsed));
+    }
+
+    [Fact]
+    public async Task A_json_answer_to_a_request_that_did_not_ask_for_a_stream_is_still_returned()
     {
         var s = await SetupAsync(alias: Alias);
         Upstream.Respond = _ => FakeUpstream.Json(200, FakeUpstream.OkBody);
 
-        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ",\"stream\":true"));
+        var response = await PostAsync(Client, s.ApiKey, Chat(Alias, ""));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal(Alias, (string?)(await BodyAsync(response))["model"]);
-        var log = await LogAsync(s.TenantId);
-        Assert.Equal((UsageStatuses.Ok, 10, 20, 0.00005m), (log.Status, log.InputTokens, log.OutputTokens, log.Cost));
     }
 
     // --- kegagalan setelah commit -----------------------------------------------------------

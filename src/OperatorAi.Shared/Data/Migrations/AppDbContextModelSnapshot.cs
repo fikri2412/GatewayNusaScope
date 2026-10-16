@@ -22,6 +22,113 @@ namespace OperatorAi.Shared.Data.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("OperatorAi.Shared.Data.Artifact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("conversation_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<int>("CurrentVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("current_version");
+
+                    b.Property<Guid?>("DerivedFromId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("derived_from_id");
+
+                    b.Property<int?>("DerivedFromVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("derived_from_version");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Language")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("language");
+
+                    b.Property<long?>("SourceMessageId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("source_message_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationId", "CreatedAt")
+                        .HasDatabaseName("ix_artifacts_conversation_created");
+
+                    b.ToTable("artifacts", (string)null);
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.ArtifactVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("NEWSEQUENTIALID()");
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("artifact_id");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("content");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)")
+                        .HasColumnName("source");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArtifactId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_artifact_versions_artifact_version");
+
+                    b.ToTable("artifact_versions", (string)null);
+                });
+
             modelBuilder.Entity("OperatorAi.Shared.Data.Attachment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -606,6 +713,24 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasDatabaseName("ux_users_username");
 
                     b.ToTable("users", (string)null);
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.Artifact", b =>
+                {
+                    b.HasOne("OperatorAi.Shared.Data.Conversation", null)
+                        .WithMany()
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OperatorAi.Shared.Data.ArtifactVersion", b =>
+                {
+                    b.HasOne("OperatorAi.Shared.Data.Artifact", null)
+                        .WithMany()
+                        .HasForeignKey("ArtifactId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("OperatorAi.Shared.Data.Attachment", b =>

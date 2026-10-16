@@ -14,6 +14,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<SavedAnswer> SavedAnswers => Set<SavedAnswer>();
+    public DbSet<Artifact> Artifacts => Set<Artifact>();
+    public DbSet<ArtifactVersion> ArtifactVersions => Set<ArtifactVersion>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -147,6 +149,29 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => new { x.UserId, x.MessageId }).IsUnique()
                 .HasFilter("[message_id] IS NOT NULL").HasDatabaseName("ux_saved_answers_user_message");
             e.HasIndex(x => new { x.UserId, x.CreatedAt }).HasDatabaseName("ix_saved_answers_user_created");
+        });
+
+        b.Entity<Artifact>(e =>
+        {
+            e.ToTable("artifacts");
+            e.Property(x => x.Id).HasDefaultValueSql("NEWSEQUENTIALID()");
+            e.Property(x => x.Kind).HasMaxLength(20);
+            e.Property(x => x.Title).HasMaxLength(200);
+            e.Property(x => x.Language).HasMaxLength(40);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql(now);
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql(now);
+            e.HasOne<Conversation>().WithMany().HasForeignKey(x => x.ConversationId).OnDelete(DeleteBehavior.NoAction);
+            e.HasIndex(x => new { x.ConversationId, x.CreatedAt }).HasDatabaseName("ix_artifacts_conversation_created");
+        });
+
+        b.Entity<ArtifactVersion>(e =>
+        {
+            e.ToTable("artifact_versions");
+            e.Property(x => x.Id).HasDefaultValueSql("NEWSEQUENTIALID()");
+            e.Property(x => x.Source).HasMaxLength(10);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql(now);
+            e.HasOne<Artifact>().WithMany().HasForeignKey(x => x.ArtifactId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(x => new { x.ArtifactId, x.Version }).IsUnique().HasDatabaseName("ux_artifact_versions_artifact_version");
         });
 
         // Kolom snake_case: ConversationId -> conversation_id.

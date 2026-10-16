@@ -295,7 +295,7 @@ public static class DataPlaneEndpoints
 
     /// <summary>
     /// Respons SSE: header dikirim begitu event pertama upstream sudah siap, lalu body dipompa sampai selesai.
-    /// <c>X-Accel-Buffering: no</c> menyuruh nginx tidak menahan chunk. Body selalu dijalankan, juga bila klien sudah
+    /// <c>X-Accel-Buffering: no</c> menyuruh nginx tidak menahan chunk, dan <c>DisableBuffering</c> mematikan buffering server. Body selalu dijalankan, juga bila klien sudah
     /// pergi sebelum header terkirim: di dalamnya stream upstream dibuang, pemakaian dicatat, dan slot dilepas.
     /// </summary>
     private sealed class SseResult(Func<Stream, CancellationToken, Task> body) : IResult
@@ -307,6 +307,10 @@ public static class DataPlaneEndpoints
             response.ContentType = "text/event-stream; charset=utf-8";
             response.Headers.CacheControl = "no-cache";
             response.Headers["X-Accel-Buffering"] = "no";
+            // GA-06: matikan buffering respons milik server (mis. IIS in-process) sebelum header dikirim, supaya tiap
+            // flush di batas event benar-benar sampai ke klien/proxy. Perlindungan klien lambat tetap ada: write dan
+            // flush berbatas deadline total (GA-02).
+            http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
             try { await response.StartAsync(http.RequestAborted); }
             catch (OperationCanceledException) { /* klien pergi: body di bawah mencatatnya sebagai 499 */ }
             await body(response.Body, http.RequestAborted);

@@ -13,11 +13,28 @@ namespace AiGateway.Core.Proxy;
 public sealed record ForwardingTargets(
     IReadOnlyList<ModelRoute> Routes,
     IReadOnlyDictionary<long, Provider> Providers,
-    IReadOnlyDictionary<long, ProviderCredential> Credentials)
+    IReadOnlyDictionary<long, ProviderCredential> Credentials,
+    IReadOnlyDictionary<(long TemplateId, string UpstreamModel), string> RouteFamilies)
 {
-    /// <summary>True bila model ini punya minimal satu route ke provider aktif ber-credential aktif.</summary>
-    public bool CanForward(long modelId) =>
-        Routes.Any(r => r.ModelId == modelId && Providers.ContainsKey(r.ProviderId) && Credentials.ContainsKey(r.ProviderId));
+    /// <summary>
+    /// Family API non-chat route ini menurut katalog template provider. null = Chat Completions: provider custom
+    /// tanpa template dan model di luar katalog selalu begitu (OpenAI-compatible yang sah).
+    /// </summary>
+    public string? FamilyOf(ModelRoute route) =>
+        Providers.TryGetValue(route.ProviderId, out var provider) && provider.TemplateId is { } templateId
+        && RouteFamilies.TryGetValue((templateId, route.UpstreamModel), out var family)
+            ? family : null;
+
+    /// <summary>true bila katalog menyatakan family route ini yang tidak bisa diteruskan gateway (mis. <c>google_generate</c>).</summary>
+    public bool HasUnsupportedFamily(ModelRoute route) =>
+        FamilyOf(route) is { } family && !ApiFamilies.Forwardable.Contains(family);
+
+    /// <summary>Route aktif, provider aktif, credential aktif, dan family yang memang bisa diteruskan.</summary>
+    public bool IsForwardable(ModelRoute route) =>
+        Providers.ContainsKey(route.ProviderId) && Credentials.ContainsKey(route.ProviderId) && !HasUnsupportedFamily(route);
+
+    /// <summary>True bila model ini punya minimal satu route yang <see cref="IsForwardable"/>.</summary>
+    public bool CanForward(long modelId) => Routes.Any(r => r.ModelId == modelId && IsForwardable(r));
 
     public static async Task<ForwardingTargets> LoadAsync(GatewayDbContext db, List<long> modelIds, CancellationToken ct)
     {
@@ -28,6 +45,18 @@ public sealed record ForwardingTargets(
         var credentials = await db.ProviderCredentials.AsNoTracking()
             .Where(c => providerIds.Contains(c.ProviderId) && c.Status == CredentialStatuses.Active)
             .ToDictionaryAsync(c => c.ProviderId, ct);
-        return new ForwardingTargets(routes, providers, credentials);
+
+        // Family non-chat per route dibaca dari katalog template provider (tanpa kolom baru di route).
+        var templateIds = providers.Values.Select(p => p.TemplateId).OfType<long>().Distinct().ToList();
+        Dictionary<(long TemplateId, string UpstreamModel), string> families = [];
+        if (templateIds.Count > 0)
+        {
+            var names = routes.Select(r => r.UpstreamModel).Distinct().ToList();
+            var rows = await db.CatalogModels.AsNoTracking()
+                .Where(c => c.ApiFamily != ApiFamilies.OpenAiChat && templateIds.Contains(c.TemplateId) && names.Contains(c.UpstreamModel))
+                .Select(c => new { c.TemplateId, c.UpstreamModel, c.ApiFamily }).ToListAsync(ct);
+            families = rows.ToDictionary(c => (c.TemplateId, c.UpstreamModel), c => c.ApiFamily);
+        }
+        return new ForwardingTargets(routes, providers, credentials, families);
     }
 }

@@ -64,6 +64,8 @@ public static class ConversationDeletion
         // Snapshot jawaban koleksi tidak ikut terhapus; referensi ke sesi/pesan yang hilang dilepas manual (tanpa FK).
         await db.Database.ExecuteSqlAsync(
             $"UPDATE saved_answers SET conversation_id = NULL, message_id = NULL WHERE conversation_id = {conversationId}", ct);
+        // Versi artifact ikut terhapus lewat FK cascade.
+        await db.Database.ExecuteSqlAsync($"DELETE FROM artifacts WHERE conversation_id = {conversationId}", ct);
         await db.Database.ExecuteSqlAsync($"DELETE FROM conversations WHERE id = {conversationId}", ct);
         await tx.CommitAsync(ct);
         return new(StatusCodes.Status204NoContent, paths);

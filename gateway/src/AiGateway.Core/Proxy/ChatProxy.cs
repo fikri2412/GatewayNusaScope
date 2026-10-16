@@ -101,7 +101,8 @@ public sealed class ChatProxy(
             return await Finish(denial.ToResponse(), UsageStatuses.Denied, denial.Reason);
 
         var targets = await ForwardingTargets.LoadAsync(db, [model.Id], ct);
-        var routeFamilies = await RouteFamiliesAsync(targets, ct);
+        // GA-08: route berfamily yang tidak bisa diteruskan dilewati (bukan dikirim dengan protokol chat yang salah).
+        var sawUnsupportedFamily = false;
 
         var now = clock.GetUtcNow().UtcDateTime;
         var prices = await db.ModelPrices.AsNoTracking()
@@ -128,13 +129,23 @@ public sealed class ChatProxy(
                     || !targets.Credentials.TryGetValue(route.ProviderId, out var credential))
                     continue;
 
+                var family = targets.FamilyOf(route);
+                if (targets.HasUnsupportedFamily(route))
+                {
+                    sawUnsupportedFamily = true;
+                    log.LogWarning("Route {RouteId} (provider {ProviderId}, model upstream {UpstreamModel}) memakai family '{Family}' yang tidak bisa diteruskan gateway; dilewati.",
+                        route.Id, provider.Id, route.UpstreamModel, family);
+                    last = Failure(502, "unsupported_upstream_family",
+                        "The provider route uses an API family the gateway cannot forward.", retriable: true);
+                    continue;
+                }
+
                 entry.Attempts++;
                 entry.ProviderId = provider.Id;
                 // ponytail: percobaan yang gagal lalu ditinggalkan tidak dicatat sendiri, jadi biaya sisi provider
                 // untuk percobaan itu tidak terlihat di usage_logs/usage_daily (plafon: satu baris per permintaan;
                 // upgrade: baris per percobaan).
-                var adapter = provider.TemplateId is { } templateId && routeFamilies.TryGetValue((templateId, route.UpstreamModel), out var family)
-                    ? FamilyAdapters.For(family) : null;
+                var adapter = family is null ? null : FamilyAdapters.For(family);
                 var attempt = await TryRouteAsync(caller, provider, credential, route, body, streaming, adapter, model.MaxOutputTokens, sw, ct);
                 entry.UpstreamStatus = attempt.UpstreamStatus;
                 entry.TtfbMs = attempt.TtfbMs;
@@ -170,7 +181,9 @@ public sealed class ChatProxy(
             ReadUsage(usage, entry);
             var price = Pricing.Pick(prices, now, entry.InputTokens);
             if (price is null) return;
-            entry.Cost = Pricing.Cost(price, entry.InputTokens, entry.CachedTokens, entry.OutputTokens);
+            // Cache-write dibawa terpisah (adaptor Anthropic) supaya ditagih dengan harga tulis, bukan harga input biasa.
+            var cacheWrite = JsonAccess.TokenCount(Get(Get(usage, "prompt_tokens_details"), "cache_creation_tokens")) ?? 0;
+            entry.Cost = Pricing.Cost(price, entry.InputTokens, entry.CachedTokens, entry.OutputTokens, cacheWrite);
             entry.InputPriceUsed = price.InputPricePer1M;
             entry.OutputPriceUsed = price.OutputPricePer1M;
             entry.Currency = price.Currency;
@@ -255,7 +268,9 @@ public sealed class ChatProxy(
                     $"The model '{alias}' has no available provider."),
                 UsageStatuses.Error, "no_available_provider");
 
-        return await Finish(new GatewayResponse(last.Status, last.Body, last.RetryAfter), UsageStatuses.Error, "upstream_failed");
+        // Tidak satu pun route yang dicoba karena semuanya berfamily tidak didukung: alasannya sendiri di log.
+        return await Finish(new GatewayResponse(last.Status, last.Body, last.RetryAfter), UsageStatuses.Error,
+            sawUnsupportedFamily && entry.Attempts == 0 ? "unsupported_upstream_family" : "upstream_failed");
     }
 
     private async Task<UpstreamResult> TryRouteAsync(
@@ -343,7 +358,13 @@ public sealed class ChatProxy(
                 return new UpstreamResult(true, status, "", false, status, (int)(sw.ElapsedMilliseconds - started), Stream: open);
             }
 
-            // Upstream yang mengabaikan stream:true dan menjawab JSON biasa diperlakukan sebagai respons utuh.
+            // GA-07: klien meminta SSE tetapi upstream menjawab sukses dengan bukan event-stream (JSON biasa karena
+            // stream:true diabaikan, NDJSON, atau tanpa Content-Type). Itu ketidakcocokan protokol: ditolak SEBELUM ada
+            // yang dikirim ke klien (route berikutnya masih bisa dicoba), bukan diturunkan diam-diam menjadi respons REST.
+            if (streaming && response.IsSuccessStatusCode)
+                return Failure(502, "upstream_protocol_mismatch", "The provider did not return an event stream for a streaming request.",
+                    retriable: true, upstreamStatus: status, ttfb: ttfb);
+
             var text = await BoundedContent.ReadStringAsync(response.Content, maxResponseBytes, opCt);
 
             if (response.IsSuccessStatusCode)
@@ -442,16 +463,20 @@ public sealed class ChatProxy(
 
     private static bool FirstEventIsError(List<string> lines)
     {
+        // Data event pertama bisa terpecah di beberapa baris data: (spesifikasi SSE menggabungkannya dengan \n).
+        var payloads = new List<string>();
         foreach (var line in lines)
         {
-            if (!SsePump.TryGetData(line, out var payload)) continue;
-            if (payload.Trim() == "[DONE]") return false;
-            var first = ParseObject(payload);
-            // Chat/Anthropic: objek "error"; Responses: event type "error" atau "response.failed".
-            var type = first?["type"] is JsonValue t && t.TryGetValue<string>(out var s) ? s : null;
-            return first?["error"] is JsonObject || type is "error" or "response.failed";
+            if (line.Length == 0 && payloads.Count > 0) break;
+            if (SsePump.TryGetData(line, out var p)) payloads.Add(p);
         }
-        return false;
+        if (payloads.Count == 0) return false;
+        if (payloads[0].Trim() == "[DONE]") return false;
+        // Gabungan valid dipakai bila ada; selain itu perilaku lama: hanya baris data pertama.
+        var first = (payloads.Count > 1 ? ParseObject(string.Join('\n', payloads)) : null) ?? ParseObject(payloads[0]);
+        // Chat/Anthropic: objek "error"; Responses: event type "error" atau "response.failed".
+        var type = first?["type"] is JsonValue t && t.TryGetValue<string>(out var s) ? s : null;
+        return first?["error"] is JsonObject || type is "error" or "response.failed";
     }
 
     /// <summary>Penagihan stream bergantung pada chunk usage terakhir; minta upstream mengirimnya.</summary>
@@ -460,21 +485,6 @@ public sealed class ChatProxy(
         if (upstreamBody["stream_options"] is not JsonObject streamOptions)
             upstreamBody["stream_options"] = streamOptions = new JsonObject();
         streamOptions["include_usage"] = true;
-    }
-
-    /// <summary>
-    /// Family API non-chat tiap route, menurut katalog template provider: <c>(template, model upstream)</c> yang tidak
-    /// ada di hasil berbicara Chat Completions (provider custom tanpa template selalu begitu).
-    /// </summary>
-    private async Task<Dictionary<(long TemplateId, string UpstreamModel), string>> RouteFamiliesAsync(ForwardingTargets targets, CancellationToken ct)
-    {
-        var templateIds = targets.Providers.Values.Select(p => p.TemplateId).OfType<long>().Distinct().ToList();
-        if (templateIds.Count == 0) return [];
-        var names = targets.Routes.Select(r => r.UpstreamModel).Distinct().ToList();
-        var rows = await db.CatalogModels.AsNoTracking()
-            .Where(c => c.ApiFamily != ApiFamilies.OpenAiChat && templateIds.Contains(c.TemplateId) && names.Contains(c.UpstreamModel))
-            .Select(c => new { c.TemplateId, c.UpstreamModel, c.ApiFamily }).ToListAsync(ct);
-        return rows.ToDictionary(c => (c.TemplateId, c.UpstreamModel), c => c.ApiFamily);
     }
 
     private static UpstreamResult Failure(int status, string code, string message, bool retriable, int? upstreamStatus = null, int? ttfb = null) =>

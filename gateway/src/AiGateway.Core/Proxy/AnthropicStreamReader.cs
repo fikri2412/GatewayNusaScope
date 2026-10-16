@@ -61,13 +61,21 @@ internal sealed class AnthropicStreamReader(TextReader upstream) : ChatChunkRead
                 break;
 
             case "message_delta":
-                Finish = AnthropicAdapter.FinishReason(Str(Get(Get(e, "delta"), "stop_reason"))) ?? "stop";
-                ReadUsage(Get(e, "usage"), final: true);
-                Emit(Chunk(new JsonObject(), Finish));
+                // GA-11: tanpa stop_reason final tidak ada alasan selesai yang dikarang ("stop" prematur): usage tetap
+                // dibaca, tetapi Finish dan chunk akhir hanya ada bila upstream benar-benar menyebut alasannya.
+                var reason = AnthropicAdapter.FinishReason(Str(Get(Get(e, "delta"), "stop_reason")));
+                ReadUsage(Get(e, "usage"), final: reason is not null);
+                if (reason is not null)
+                {
+                    Finish = reason;
+                    Emit(Chunk(new JsonObject(), Finish));
+                }
                 break;
 
             case "message_stop":
-                Complete();
+                // Penutup sah hanya bila alasan selesai sudah terlihat; selain itu stream tetap "terputus" (tanpa [DONE]),
+                // jadi pemanggil tidak menganggapnya sukses.
+                if (Finish is not null) Complete();
                 break;
 
             case "error":

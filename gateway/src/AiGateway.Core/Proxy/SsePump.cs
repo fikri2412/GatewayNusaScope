@@ -77,6 +77,7 @@ internal static class SsePump
         string? finish = null;
         var content = new StringBuilder();
         var skipBlank = false;
+        var assembler = new SseDataAssembler(); // data: multi-baris (GA-05)
         var firstIndex = 0;
         var end = StreamEnd.Interrupted;
 
@@ -112,11 +113,19 @@ internal static class SsePump
             }
         }
 
+        // Sisa JSON multi-baris yang tidak pernah lengkap diteruskan apa adanya, seperti baris data tak valid lainnya.
+        async Task FlushLeftoversAsync()
+        {
+            if (!assembler.HasPending) return;
+            foreach (var raw in assembler.TakeLeftovers()) await writer.WriteAsync((raw + "\n").AsMemory(), overall.Token);
+        }
+
         // Mengembalikan true bila stream selesai ([DONE]).
         async Task<bool> HandleAsync(string line)
         {
             if (line.Length == 0) // batas event
             {
+                await FlushLeftoversAsync();
                 if (skipBlank) { skipBlank = false; return false; }
                 await writer.WriteAsync("\n".AsMemory(), overall.Token);
                 await writer.FlushAsync(overall.Token);
@@ -129,15 +138,19 @@ internal static class SsePump
             }
             if (payload.Trim() == "[DONE]")
             {
+                await FlushLeftoversAsync();
                 await writer.WriteAsync("data: [DONE]\n\n".AsMemory(), overall.Token);
                 await writer.FlushAsync(overall.Token);
                 return true;
             }
 
-            var chunk = TryParse(payload);
+            // Objek utuh dari satu baris atau gabungan beberapa baris data: (JSON multi-baris); selain itu ditahan
+            // (JSON belum lengkap) atau diteruskan apa adanya (bukan JSON).
+            var chunk = assembler.Offer(line, payload, out var held);
             if (chunk is null)
             {
-                await writer.WriteAsync((line + "\n").AsMemory(), overall.Token);
+                if (assembler.Overflowed) await FlushLeftoversAsync();
+                else if (!held) await writer.WriteAsync((line + "\n").AsMemory(), overall.Token);
                 return false;
             }
 
@@ -188,6 +201,12 @@ internal static class SsePump
 
             if (line is null)
             {
+                // Event terakhir tanpa baris kosong penutup: sisa yang tertahan tidak boleh hilang.
+                if (assembler.HasPending)
+                {
+                    foreach (var raw in assembler.TakeLeftovers())
+                        if (!await TryWriteAsync(writer, raw + "\n", overall.Token)) break;
+                }
                 // Upstream menutup tanpa [DONE]: utuh bila finish_reason sudah terlihat, selain itu terputus.
                 if (finish is not null && await TryWriteAsync(writer, "data: [DONE]\n\n", overall.Token)) end = StreamEnd.Completed;
                 else if (finish is not null) end = overall.IsCancellationRequested ? CancellationEnd() : StreamEnd.ClientClosed;
@@ -249,12 +268,6 @@ internal static class SsePump
         {
             return false;
         }
-    }
-
-    private static JsonObject? TryParse(string payload)
-    {
-        try { return JsonNode.Parse(payload) as JsonObject; }
-        catch (System.Text.Json.JsonException) { return null; }
     }
 
     private static string? Str(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;

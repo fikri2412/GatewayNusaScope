@@ -147,3 +147,50 @@ public class SavedAnswer
     public required string Content { get; set; }
     public DateTime CreatedAt { get; set; }
 }
+
+/// <summary>Jenis artifact yang didukung Canvas. Nilai disimpan apa adanya di kolom <c>kind</c>.</summary>
+public static class ArtifactKinds
+{
+    public const string Document = "dokumen", Code = "kode", Diagram = "diagram", Spreadsheet = "spreadsheet", Image = "gambar";
+    public static readonly string[] All = [Document, Code, Diagram, Spreadsheet, Image];
+}
+
+/// <summary>Asal sebuah versi artifact: user menyimpan, AI membuat/memperbarui, atau salinan versi lama (urungkan).</summary>
+public static class ArtifactSources
+{
+    public const string User = "user", Ai = "ai", Restore = "restore";
+}
+
+/// <summary>
+/// Konten kerja Canvas milik satu percakapan (dokumen Markdown atau kode). Isinya ada di <see cref="ArtifactVersion"/>;
+/// baris ini hanya metadata + penunjuk versi aktif.
+/// </summary>
+public class Artifact
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public required string Kind { get; set; }
+    public required string Title { get; set; }
+    /// <summary>Bahasa kode (mis. <c>csharp</c>); null untuk dokumen dan diagram (isi diagram = sumber Mermaid).</summary>
+    public string? Language { get; set; }
+    /// <summary>Nomor versi aktif (mulai 1). Penyimpanan wajib menyebut versi dasarnya; beda berarti konflik.</summary>
+    public int CurrentVersion { get; set; }
+    /// <summary>Pesan user yang memicu AI membuat artifact ini; null untuk artifact buatan user.</summary>
+    public long? SourceMessageId { get; set; }
+    /// <summary>Asal-usul variasi gambar: artifact sumber dan versinya saat diturunkan. Tanpa FK (sumber boleh dihapus kemudian).</summary>
+    public Guid? DerivedFromId { get; set; }
+    public int? DerivedFromVersion { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Satu snapshot isi artifact. Tidak pernah diubah setelah ditulis; urungkan membuat versi baru.</summary>
+public class ArtifactVersion
+{
+    public Guid Id { get; set; }
+    public Guid ArtifactId { get; set; }
+    public int Version { get; set; }
+    public required string Content { get; set; }
+    public required string Source { get; set; }
+    public DateTime CreatedAt { get; set; }
+}

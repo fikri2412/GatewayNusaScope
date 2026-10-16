@@ -108,6 +108,103 @@ public class AnthropicProxyTests(TestDb db) : FamilyProxyTestBase(db)
         Assert.Equal((UsageStatuses.Ok, 14, 7, 4, "tool_calls"), (log.Status, log.InputTokens, log.OutputTokens, log.CachedTokens, log.FinishReason));
     }
 
+    /// <summary>Event Anthropic dengan JSON dipecah di beberapa baris data: (hanya untuk JSON tanpa koma di dalam string).</summary>
+    private static string MultiLineEvent(string type, string json) => $"event: {type}\ndata: " + json.Replace(",", ",\ndata: ") + "\n\n";
+
+    [Fact]
+    public async Task Translates_stream_events_whose_data_is_split_over_several_lines()
+    {
+        var s = await SetupAnthropicAsync();
+        Upstream.Respond = _ => Sse(
+            MultiLineEvent("message_start", """{"type":"message_start","message":{"id":"msg_1","model":"real-model","usage":{"input_tokens":10,"output_tokens":1}}}""")
+            + MultiLineEvent("content_block_start", """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""")
+            + MultiLineEvent("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ha"}}""")
+            + MultiLineEvent("content_block_stop", """{"type":"content_block_stop","index":0}""")
+            + MultiLineEvent("message_delta", """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}""")
+            + MultiLineEvent("message_stop", """{"type":"message_stop"}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.EndsWith("data: [DONE]\n\n", raw);
+        var chunks = raw.Split('\n').Where(l => l.StartsWith("data: ") && l != "data: [DONE]").Select(l => JsonNode.Parse(l[6..])!).ToList();
+        Assert.Equal("ha", string.Concat(chunks.Select(c => (string?)c["choices"]!.AsArray().FirstOrDefault()?["delta"]?["content"])));
+        Assert.Contains(chunks, c => (string?)c["choices"]!.AsArray().FirstOrDefault()?["finish_reason"] == "stop");
+
+        await using var ctx = Db.NewContext(s.TenantId);
+        var log = await ctx.UsageLogs.SingleAsync();
+        Assert.Equal((UsageStatuses.Ok, 10, 7, "stop"), (log.Status, log.InputTokens, log.OutputTokens, log.FinishReason));
+    }
+
+    [Fact]
+    public async Task A_message_delta_without_a_stop_reason_is_not_a_premature_stop()
+    {
+        var s = await SetupAnthropicAsync();
+        // Hanya usage di message_delta, lalu stream terputus: tidak ada alasan selesai yang boleh dikarang.
+        Upstream.Respond = _ => Sse(
+            Event("message_start", """{"type":"message_start","message":{"id":"msg_1","model":"real-model","usage":{"input_tokens":10,"output_tokens":1}}}""")
+            + Event("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ha"}}""")
+            + Event("message_delta", """{"type":"message_delta","delta":{},"usage":{"output_tokens":5}}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("\"finish_reason\":\"stop\"", raw);
+        Assert.DoesNotContain("data: [DONE]", raw);
+        Assert.Contains("upstream_stream_interrupted", raw);
+        await using var ctx = Db.NewContext(s.TenantId);
+        var log = await ctx.UsageLogs.SingleAsync();
+        Assert.Equal(UsageStatuses.Error, log.Status);
+        Assert.Null(log.FinishReason);
+        Assert.True(log.UsageIncomplete); // output parsial bukan bukti kelengkapan
+    }
+
+    [Fact]
+    public async Task A_message_stop_without_any_stop_reason_is_not_reported_as_success()
+    {
+        var s = await SetupAnthropicAsync();
+        Upstream.Respond = _ => Sse(
+            Event("message_start", """{"type":"message_start","message":{"id":"msg_1","model":"real-model","usage":{"input_tokens":10,"output_tokens":1}}}""")
+            + Event("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ha"}}""")
+            + Event("message_stop", """{"type":"message_stop"}"""));
+
+        var response = await PostChatAsync(s.ApiKey, Chat(extra: ",\"stream\":true"));
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("data: [DONE]", raw);
+        await using var ctx = Db.NewContext(s.TenantId);
+        Assert.Equal(UsageStatuses.Error, (await ctx.UsageLogs.SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task Cache_write_tokens_are_billed_at_the_cache_write_price_and_reported_separately()
+    {
+        var s = await SetupAnthropicAsync();
+        await WithTenantAsync(s.TenantId, async (_, ctx) =>
+        {
+            await ctx.ModelPrices.Where(p => p.ModelId == s.ModelId)
+                .ExecuteUpdateAsync(u => u.SetProperty(p => p.CacheReadPricePer1M, 0.1m).SetProperty(p => p.CacheWritePricePer1M, 1.25m));
+            return 0;
+        });
+        Upstream.Respond = _ => FakeUpstream.Json(200, """
+            {"id":"msg_1","type":"message","role":"assistant","model":"real-model","stop_reason":"end_turn",
+             "content":[{"type":"text","text":"ok"}],
+             "usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":6,"output_tokens":20}}
+            """);
+
+        var response = await PostChatAsync(s.ApiKey, Chat());
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal((20, 4, 6), ((int?)body["usage"]!["prompt_tokens"], (int?)body["usage"]!["prompt_tokens_details"]!["cached_tokens"],
+            (int?)body["usage"]!["prompt_tokens_details"]!["cache_creation_tokens"]));
+        await using var ctx2 = Db.NewContext(s.TenantId);
+        var log = await ctx2.UsageLogs.SingleAsync();
+        // prompt 20 = 10 baru x 1 + 4 cache read x 0.1 + 6 cache write x 1.25; output 20 x 2 => 57.9 per juta
+        Assert.Equal((20, 20, 4, 0.0000579m), (log.InputTokens, log.OutputTokens, log.CachedTokens, log.Cost));
+    }
+
     [Fact]
     public async Task Keeps_inline_image_parts_and_rejects_image_sources_the_gateway_would_not_forward()
     {

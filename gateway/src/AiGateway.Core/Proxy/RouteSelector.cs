@@ -46,15 +46,20 @@ public static class Pricing
     }
 
     /// <summary>
-    /// Token prompt yang ter-cache ditagih dengan harga cache read bila ada (selain itu harga input); sisanya harga input.
-    /// <paramref name="inputTokens"/> sudah mencakup <paramref name="cachedTokens"/> (format OpenAI). Dibulatkan 8 desimal.
+    /// Token prompt ter-cache ditagih dengan harga cache read bila ada, token yang ditulis ke cache dengan harga cache
+    /// write bila ada (keduanya jatuh ke harga input bila tidak ada), dan sisanya harga input. Setiap token ditagih
+    /// tepat satu kali. <paramref name="inputTokens"/> sudah mencakup <paramref name="cachedTokens"/> dan
+    /// <paramref name="cacheWriteTokens"/> (format OpenAI). Dibulatkan 8 desimal.
     /// </summary>
-    public static decimal Cost(ModelPrice price, int inputTokens, int cachedTokens, int outputTokens)
+    public static decimal Cost(ModelPrice price, int inputTokens, int cachedTokens, int outputTokens, int cacheWriteTokens = 0)
     {
-        var cached = Math.Clamp(cachedTokens, 0, Math.Max(inputTokens, 0));
-        var fresh = Math.Max(inputTokens, 0) - cached;
+        var input = Math.Max(inputTokens, 0);
+        var cached = Math.Clamp(cachedTokens, 0, input);
+        var written = Math.Clamp(cacheWriteTokens, 0, input - cached);
+        var fresh = input - cached - written;
         var total = fresh * price.InputPricePer1M
                     + cached * (price.CacheReadPricePer1M ?? price.InputPricePer1M)
+                    + written * (price.CacheWritePricePer1M ?? price.InputPricePer1M)
                     + Math.Max(outputTokens, 0) * price.OutputPricePer1M;
         return Math.Round(total / 1_000_000m, 8);
     }

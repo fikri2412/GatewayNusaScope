@@ -7,7 +7,8 @@ public static class ToolDefinitions
 {
     public const string AnalisisFile = "analisis_file", AnalisisDokumen = "analisis_dokumen",
         BuatLaporanPdf = "buat_laporan_pdf", CekStatus = "cek_status", CariWeb = "cari_web",
-        FetchUrl = "fetch_url";
+        FetchUrl = "fetch_url", BuatArtifact = "buat_artifact", BacaArtifact = "baca_artifact",
+        PerbaruiArtifact = "perbarui_artifact";
 
     public static JsonArray All() => (JsonArray)JsonNode.Parse("""
         [
@@ -94,6 +95,55 @@ public static class ToolDefinitions
                   "url": { "type": "string", "description": "Alamat URL lengkap halaman publik yang ingin dibaca (harus diawali http:// atau https://)" }
                 },
                 "required": ["url"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "buat_artifact",
+              "description": "Membuat dokumen, potongan kode, atau diagram Mermaid di panel Canvas (ruang kerja di samping chat) yang bisa diedit user. Gunakan untuk tulisan/kode yang panjang atau akan diedit ulang (laporan, draf, skrip), bukan untuk jawaban pendek. Isi penuh masuk ke Canvas; di chat cukup rangkum singkat apa yang dibuat.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "jenis": { "type": "string", "enum": ["dokumen", "kode", "diagram", "gambar"], "description": "dokumen = teks Markdown; kode = kode program; diagram = sumber Mermaid (flowchart, classDiagram, erDiagram, sequenceDiagram, dst.) yang dirender di Canvas; gambar = ilustrasi vektor berupa dokumen SVG lengkap (elemen akar <svg> dengan viewBox; tanpa script, foreignObject, atau atribut on*; tautan hanya #id lokal). Bukan foto atau gambar raster." },
+                  "judul": { "type": "string", "description": "Judul singkat (maksimal 200 karakter)" },
+                  "bahasa": { "type": "string", "description": "Hanya untuk jenis kode: nama bahasa huruf kecil, mis. csharp, python, sql, typescript" },
+                  "isi": { "type": "string", "description": "Isi lengkap artifact (dokumen memakai Markdown; gambar berupa SVG)" },
+                  "turunan_dari": { "type": "string", "description": "Opsional, untuk variasi: artifact_id sumber (berjenis sama) yang menjadi dasar artifact baru ini" },
+                  "versi_sumber": { "type": "integer", "description": "Opsional: nomor versi sumber yang dijadikan dasar (bawaan: versi terbaru)" }
+                },
+                "required": ["jenis", "judul", "isi"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "baca_artifact",
+              "description": "Membaca isi dan nomor versi terbaru sebuah artifact Canvas di percakapan ini. Wajib dipanggil sebelum perbarui_artifact bila user mungkin sudah mengeditnya, atau bila artifact_id/isi sebelumnya tidak kamu miliki.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "artifact_id": { "type": "string", "description": "artifact_id dari hasil buat_artifact atau dari daftar artifact" }
+                },
+                "required": ["artifact_id"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "perbarui_artifact",
+              "description": "Menyimpan isi baru sebuah artifact Canvas sebagai versi baru. versi_dasar adalah nomor versi yang kamu baca/buat terakhir; bila user sudah mengubahnya, penyimpanan ditolak dan kamu harus baca ulang dengan baca_artifact lalu terapkan perubahan di atas isi terbaru.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "artifact_id": { "type": "string" },
+                  "versi_dasar": { "type": "integer", "description": "Nomor versi yang menjadi dasar perubahanmu" },
+                  "isi": { "type": "string", "description": "Isi lengkap yang baru (bukan diff)" }
+                },
+                "required": ["artifact_id", "versi_dasar", "isi"]
               }
             }
           }
