@@ -14,7 +14,8 @@
     "check:thinking": "node src/thinkingModes.check.ts",
     "preview": "vite preview",
     "check:canvas": "node src/canvas.check.ts",
-    "check:spreadsheet": "node src/spreadsheet.check.ts"
+    "check:spreadsheet": "node src/spreadsheet.check.ts",
+    "check:svg": "node src/svg.check.ts"
   },
   "dependencies": {
     "@fortune-sheet/react": "1.0.4",

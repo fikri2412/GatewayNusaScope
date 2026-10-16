@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.EntityFrameworkCore;
 
 namespace OperatorAi.Shared.Data;
@@ -15,6 +17,9 @@ public enum ArtifactStatus { Ok, Created, Unchanged, Conflict, VersionLimit, Art
 
 /// <param name="Artifact">Baris artifact sesudah operasi (null untuk NotFound/ArtifactLimit).</param>
 /// <param name="Content">Isi versi aktif sesudah operasi.</param>
+/// <summary>Asal-usul variasi: artifact sumber (dalam percakapan yang sama) dan versinya saat diturunkan.</summary>
+public sealed record ArtifactDerivation(Guid FromId, int FromVersion);
+
 public sealed record ArtifactWrite(ArtifactStatus Status, Artifact? Artifact = null, string? Content = null);
 
 /// <summary>
@@ -47,6 +52,7 @@ public static partial class ArtifactStore
     {
         if (content is null) return "Isi wajib ada (boleh kosong, tidak boleh null).";
         if (content.Length > ArtifactLimits.MaxContentChars) return $"Isi maksimal {ArtifactLimits.MaxContentChars:N0} karakter.";
+        if (kind == ArtifactKinds.Image) return ValidateSvg(content);
         if (kind == ArtifactKinds.Spreadsheet)
         {
             try
@@ -62,12 +68,60 @@ public static partial class ArtifactStore
         return null;
     }
 
+    /// <summary>
+    /// Gambar = dokumen SVG: XML yang valid dengan akar <c>svg</c>, tanpa DTD, tanpa elemen aktif (script, foreignObject,
+    /// iframe, object, embed), tanpa atribut <c>on*</c>, dan tautan hanya ke fragmen lokal (<c>#id</c>) atau gambar data
+    /// PNG/JPEG/WebP. Penyajian di web tetap lewat &lt;img&gt; (inert); validasi ini melindungi berkas SVG yang diunduh
+    /// dan dibuka langsung.
+    /// </summary>
+    public static string? ValidateSvg(string content)
+    {
+        try
+        {
+            var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+            using var reader = XmlReader.Create(new StringReader(content), settings);
+            var doc = XDocument.Load(reader);
+            if (doc.Root is null || doc.Root.Name.LocalName != "svg") return "Isi gambar harus dokumen SVG dengan elemen akar <svg>.";
+            foreach (var element in doc.Root.DescendantsAndSelf())
+            {
+                if (ForbiddenSvgElements.Contains(element.Name.LocalName))
+                    return $"Elemen <{element.Name.LocalName}> tidak diizinkan dalam SVG.";
+                foreach (var attribute in element.Attributes())
+                {
+                    var name = attribute.Name.LocalName;
+                    if (name.StartsWith("on", StringComparison.OrdinalIgnoreCase)) return "Atribut event (on*) tidak diizinkan dalam SVG.";
+                    if (name.Equals("href", StringComparison.OrdinalIgnoreCase) && !IsSafeSvgLink(attribute.Value))
+                        return "Tautan SVG hanya boleh ke fragmen lokal (#id) atau gambar data PNG/JPEG/WebP.";
+                }
+            }
+            return null;
+        }
+        catch (XmlException)
+        {
+            return "Isi gambar bukan SVG/XML yang valid.";
+        }
+    }
+
+    private static readonly HashSet<string> ForbiddenSvgElements = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "script", "foreignObject", "iframe", "object", "embed",
+    };
+
+    private static bool IsSafeSvgLink(string value)
+    {
+        var v = value.Trim();
+        return v.StartsWith('#') || v.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase)
+            || v.StartsWith("data:image/jpeg;base64,", StringComparison.OrdinalIgnoreCase)
+            || v.StartsWith("data:image/webp;base64,", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Bahasa kanonik: hanya kode yang punya bahasa (tanpa bahasa jatuh ke <c>text</c>); dokumen dan diagram null.</summary>
     public static string? NormalizeLanguage(string kind, string? language) =>
         kind != ArtifactKinds.Code ? null : string.IsNullOrWhiteSpace(language) ? "text" : language.Trim().ToLowerInvariant();
 
     public static async Task<ArtifactWrite> CreateAsync(AppDbContext db, Guid conversationId, string kind, string title,
-        string? language, string content, string source, long? sourceMessageId, CancellationToken ct)
+        string? language, string content, string source, long? sourceMessageId, CancellationToken ct,
+        ArtifactDerivation? derivedFrom = null)
     {
         var ownTransaction = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
         await using (ownTransaction)
@@ -80,6 +134,7 @@ public static partial class ArtifactStore
             {
                 ConversationId = conversationId, Kind = kind, Title = title.Trim(), Language = NormalizeLanguage(kind, language),
                 CurrentVersion = 1, SourceMessageId = sourceMessageId, CreatedAt = now, UpdatedAt = now,
+                DerivedFromId = derivedFrom?.FromId, DerivedFromVersion = derivedFrom?.FromVersion,
             };
             db.Artifacts.Add(artifact);
             await db.SaveChangesAsync(ct); // Id (NEWSEQUENTIALID) dibutuhkan baris versi

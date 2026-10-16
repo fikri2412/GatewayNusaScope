@@ -149,7 +149,7 @@ export interface JobDto {
   createdAt: string
 }
 
-export type ArtifactKind = 'dokumen' | 'kode' | 'diagram' | 'spreadsheet'
+export type ArtifactKind = 'dokumen' | 'kode' | 'diagram' | 'spreadsheet' | 'gambar'
 
 /** Artifact Canvas tanpa isi: dasar tab dan kartu referensi. */
 export interface ArtifactSummary {
@@ -162,6 +162,9 @@ export interface ArtifactSummary {
   currentVersion: number
   /** Pesan user pemicu bila dibuat AI; cocok dengan `MessageDto.sourceMessageId` jawabannya. */
   sourceMessageId: number | null
+  /** Asal-usul variasi gambar: artifact sumber dan versinya saat diturunkan (null bila bukan variasi). */
+  derivedFromId?: string | null
+  derivedFromVersion?: number | null
   createdAt: string
   updatedAt: string
 }

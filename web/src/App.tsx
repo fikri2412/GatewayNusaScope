@@ -103,7 +103,7 @@ function ChatPane({ conversation, models, modelsError, reloadModels, policy, pol
                   {artifactsForMessage(m, artifacts).map((a) => (
                     <button key={a.id} type="button" className="artifact-card" onClick={() => openArtifact(a.id)}>
                       <span className="artifact-card-title">{a.title}</span>
-                      <span className="artifact-card-meta">{a.kind === 'dokumen' ? 'Dokumen' : a.kind === 'diagram' ? 'Diagram' : a.kind === 'spreadsheet' ? 'Spreadsheet' : `Kode · ${a.language ?? 'text'}`} · v{a.currentVersion} · Buka di Canvas</span>
+                      <span className="artifact-card-meta">{a.kind === 'dokumen' ? 'Dokumen' : a.kind === 'diagram' ? 'Diagram' : a.kind === 'spreadsheet' ? 'Spreadsheet' : a.kind === 'gambar' ? 'Gambar' : `Kode · ${a.language ?? 'text'}`} · v{a.currentVersion} · Buka di Canvas</span>
                     </button>
                   ))}
                 </div>

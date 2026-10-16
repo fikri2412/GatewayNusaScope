@@ -211,8 +211,24 @@ public static class ToolDispatcher
         var invalid = ArtifactStore.Validate(jenis, judul, string.IsNullOrWhiteSpace(bahasa) ? null : bahasa.Trim().ToLowerInvariant(), isi);
         if (invalid is not null) return ToolResult.Error(invalid);
 
+        // Asal-usul variasi (opsional): sumber harus artifact di percakapan ini, bukan id karangan atau milik orang lain.
+        ArtifactDerivation? derived = null;
+        if (TryGetString(args, "turunan_dari", out var rawSource) && !string.IsNullOrWhiteSpace(rawSource))
+        {
+            if (!Guid.TryParse(rawSource, out var sourceId)) return ToolResult.Error("turunan_dari bukan artifact_id yang valid.");
+            var source = await ctx.Db.Artifacts.AsNoTracking()
+                .Where(a => a.Id == sourceId && a.ConversationId == ctx.ConversationId)
+                .Select(a => new { a.Kind, a.CurrentVersion }).FirstOrDefaultAsync(ct);
+            if (source is null) return ToolResult.Error("Artifact sumber (turunan_dari) tidak ditemukan di percakapan ini.");
+            if (source.Kind != jenis) return ToolResult.Error("Variasi harus berjenis sama dengan artifact sumbernya.");
+            var sourceVersion = source.CurrentVersion;
+            if (args.TryGetProperty("versi_sumber", out var vs) && vs.ValueKind == JsonValueKind.Number && vs.TryGetInt32(out var given)
+                && given >= 1 && given <= source.CurrentVersion) sourceVersion = given;
+            derived = new ArtifactDerivation(sourceId, sourceVersion);
+        }
+
         var result = await ArtifactStore.CreateAsync(ctx.Db, ctx.ConversationId, jenis, judul,
-            string.IsNullOrWhiteSpace(bahasa) ? null : bahasa.Trim().ToLowerInvariant(), isi, ArtifactSources.Ai, ctx.SourceMessageId, ct);
+            string.IsNullOrWhiteSpace(bahasa) ? null : bahasa.Trim().ToLowerInvariant(), isi, ArtifactSources.Ai, ctx.SourceMessageId, ct, derived);
         if (result.Status == ArtifactStatus.ArtifactLimit)
             return ToolResult.Error($"Percakapan ini sudah punya {ArtifactLimits.MaxPerConversation} artifact; perbarui yang ada.");
         return new ToolResult($"Artifact dibuat di Canvas. artifact_id={result.Artifact!.Id}, versi=1. Beri tahu user dalam 1-2 kalimat; jangan menyalin isinya ke chat.");

@@ -106,10 +106,12 @@ public static class ToolDefinitions
               "parameters": {
                 "type": "object",
                 "properties": {
-                  "jenis": { "type": "string", "enum": ["dokumen", "kode", "diagram"], "description": "dokumen = teks Markdown; kode = kode program; diagram = sumber Mermaid (flowchart, classDiagram, erDiagram, sequenceDiagram, dst.) yang dirender di Canvas" },
+                  "jenis": { "type": "string", "enum": ["dokumen", "kode", "diagram", "gambar"], "description": "dokumen = teks Markdown; kode = kode program; diagram = sumber Mermaid (flowchart, classDiagram, erDiagram, sequenceDiagram, dst.) yang dirender di Canvas; gambar = ilustrasi vektor berupa dokumen SVG lengkap (elemen akar <svg> dengan viewBox; tanpa script, foreignObject, atau atribut on*; tautan hanya #id lokal). Bukan foto atau gambar raster." },
                   "judul": { "type": "string", "description": "Judul singkat (maksimal 200 karakter)" },
                   "bahasa": { "type": "string", "description": "Hanya untuk jenis kode: nama bahasa huruf kecil, mis. csharp, python, sql, typescript" },
-                  "isi": { "type": "string", "description": "Isi lengkap artifact (dokumen memakai Markdown)" }
+                  "isi": { "type": "string", "description": "Isi lengkap artifact (dokumen memakai Markdown; gambar berupa SVG)" },
+                  "turunan_dari": { "type": "string", "description": "Opsional, untuk variasi: artifact_id sumber (berjenis sama) yang menjadi dasar artifact baru ini" },
+                  "versi_sumber": { "type": "integer", "description": "Opsional: nomor versi sumber yang dijadikan dasar (bawaan: versi terbaru)" }
                 },
                 "required": ["jenis", "judul", "isi"]
               }

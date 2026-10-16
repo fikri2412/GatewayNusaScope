@@ -44,6 +44,14 @@ namespace OperatorAi.Shared.Data.Migrations
                         .HasColumnType("int")
                         .HasColumnName("current_version");
 
+                    b.Property<Guid?>("DerivedFromId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("derived_from_id");
+
+                    b.Property<int?>("DerivedFromVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("derived_from_version");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(20)

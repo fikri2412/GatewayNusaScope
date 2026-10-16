@@ -24,10 +24,12 @@ public static class Mapping
             s.ConversationId is not null);
 
     public static ArtifactSummaryDto ToSummary(this Artifact a) =>
-        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt));
+        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt),
+            a.DerivedFromId, a.DerivedFromVersion);
 
     public static ArtifactDto ToDto(this Artifact a, string content) =>
-        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt), content);
+        new(a.Id, a.Kind, a.Title, a.Language, a.CurrentVersion, a.SourceMessageId, Utc(a.CreatedAt), Utc(a.UpdatedAt), content,
+            a.DerivedFromId, a.DerivedFromVersion);
 
     public static async Task<List<MessageDto>> ToDtosAsync(this AppDbContext db, IReadOnlyList<Message> messages,
         CancellationToken ct)

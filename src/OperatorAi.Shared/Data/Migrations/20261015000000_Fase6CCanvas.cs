@@ -27,6 +27,8 @@ namespace OperatorAi.Shared.Data.Migrations
                     language = table.Column<string>(type: "nvarchar(40)", maxLength: 40, nullable: true),
                     current_version = table.Column<int>(type: "int", nullable: false),
                     source_message_id = table.Column<long>(type: "bigint", nullable: true),
+                    derived_from_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    derived_from_version = table.Column<int>(type: "int", nullable: true),
                     created_at = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "SYSUTCDATETIME()"),
                     updated_at = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "SYSUTCDATETIME()")
                 },

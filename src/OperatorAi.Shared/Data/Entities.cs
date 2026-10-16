@@ -151,8 +151,8 @@ public class SavedAnswer
 /// <summary>Jenis artifact yang didukung Canvas. Nilai disimpan apa adanya di kolom <c>kind</c>.</summary>
 public static class ArtifactKinds
 {
-    public const string Document = "dokumen", Code = "kode", Diagram = "diagram", Spreadsheet = "spreadsheet";
-    public static readonly string[] All = [Document, Code, Diagram, Spreadsheet];
+    public const string Document = "dokumen", Code = "kode", Diagram = "diagram", Spreadsheet = "spreadsheet", Image = "gambar";
+    public static readonly string[] All = [Document, Code, Diagram, Spreadsheet, Image];
 }
 
 /// <summary>Asal sebuah versi artifact: user menyimpan, AI membuat/memperbarui, atau salinan versi lama (urungkan).</summary>
@@ -177,6 +177,9 @@ public class Artifact
     public int CurrentVersion { get; set; }
     /// <summary>Pesan user yang memicu AI membuat artifact ini; null untuk artifact buatan user.</summary>
     public long? SourceMessageId { get; set; }
+    /// <summary>Asal-usul variasi gambar: artifact sumber dan versinya saat diturunkan. Tanpa FK (sumber boleh dihapus kemudian).</summary>
+    public Guid? DerivedFromId { get; set; }
+    public int? DerivedFromVersion { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

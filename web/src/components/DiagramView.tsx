@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { normalizeMermaid, sizeSvg } from '../canvas'
+import { saveBlob, svgToPng } from '../svgExport'
 
-/** Sisi terpanjang PNG hasil ekspor; melindungi memori untuk diagram yang sangat besar (≤ 16 MP per sisi 4096). */
-const MAX_PNG_SIDE = 4096
 const ZOOMS = [0.5, 0.75, 1, 1.5, 2, 3]
 
 type Mermaid = (typeof import('mermaid'))['default']
@@ -33,34 +32,6 @@ let renderSeq = 0
 
 type Rendered = { svg: string; width: number; height: number }
 type State = { source: string; rendered: Rendered | null; error: string | null }
-
-/** SVG → PNG di browser: gambar ke canvas putih skala 2 (dibatasi), tanpa layanan render eksternal. */
-async function svgToPng(rendered: Rendered): Promise<Blob> {
-  const scale = Math.min(2, MAX_PNG_SIDE / Math.max(rendered.width, rendered.height))
-  const image = new Image()
-  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(rendered.svg)}`
-  await image.decode()
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(rendered.width * scale))
-  canvas.height = Math.max(1, Math.round(rendered.height * scale))
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas 2D tidak tersedia di browser ini.')
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
-  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Gagal membuat PNG.'))), 'image/png'))
-}
-
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name
-  document.body.append(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
-}
 
 /**
  * Hasil render diagram Mermaid. Sumber yang tidak valid menampilkan galat Mermaid apa adanya (bukan diagram
@@ -103,7 +74,7 @@ export function DiagramView({ source, pngName }: { source: string; pngName: stri
     if (!rendered) return
     setPngError(null)
     try {
-      saveBlob(await svgToPng(rendered), pngName)
+      saveBlob((await svgToPng(rendered)).blob, pngName)
     } catch (e: unknown) {
       setPngError(e instanceof Error ? e.message : String(e))
     }

@@ -138,6 +138,76 @@ public class ArtifactTests : QueueTestBase
         Assert.Equal(1, await db.ArtifactVersions.CountAsync());
     }
 
+    private const string Svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#0f5f57"/></svg>""";
+
+    [Theory]
+    [InlineData("bukan xml")]
+    [InlineData("<html></html>")]                                                                              // akar bukan svg
+    [InlineData("<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>")]                    // elemen aktif
+    [InlineData("<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"x()\"></svg>")]                             // atribut event
+    [InlineData("<svg xmlns=\"http://www.w3.org/2000/svg\"><foreignObject/></svg>")]
+    [InlineData("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"><image xlink:href=\"https://evil.example/x.png\"/></svg>")] // tautan eksternal
+    [InlineData("<!DOCTYPE svg [<!ENTITY a \"b\">]><svg xmlns=\"http://www.w3.org/2000/svg\"/>")]                // DTD
+    public async Task Image_artifacts_reject_active_or_non_svg_content(string content)
+    {
+        var conversationId = await NewConversationAsync();
+        await using var db = NewContext();
+
+        var (status, body) = await ConversationTestSupport.ExecuteAsync(await ArtifactEndpoints.CreateAsync(conversationId,
+            new("gambar", "Gambar", null, content), ConversationTestSupport.Request("test"), db, CancellationToken.None));
+
+        Assert.Equal(400, status);
+        Assert.Equal(ArtifactEndpoints.InvalidCode, Json(body).GetProperty("code").GetString());
+        Assert.Equal(0, await db.Artifacts.CountAsync());
+    }
+
+    [Fact]
+    public async Task Image_artifacts_accept_a_plain_svg_with_local_links()
+    {
+        var (_, id) = await NewArtifactAsync(Svg.Replace("<circle", "<defs><linearGradient id=\"g\"/></defs><use href=\"#g\"/><circle"), kind: "gambar");
+        await using var db = NewContext();
+
+        var artifact = await db.Artifacts.SingleAsync(a => a.Id == id);
+
+        Assert.Equal("gambar", artifact.Kind);
+        Assert.Null(artifact.Language);
+        Assert.Null(artifact.DerivedFromId);
+    }
+
+    [Fact]
+    public async Task Ai_tool_records_which_artifact_a_variation_was_derived_from()
+    {
+        var (conversationId, sourceId) = await NewArtifactAsync(Svg, kind: "gambar");
+        await using var db = NewContext();
+
+        var result = await ToolDispatcher.ExecuteAsync(Context(db, conversationId), ToolDefinitions.BuatArtifact,
+            $$"""{"jenis":"gambar","judul":"Variasi 1","isi":{{System.Text.Json.JsonSerializer.Serialize(Svg)}},"turunan_dari":"{{sourceId}}"}""", CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var variation = await db.Artifacts.SingleAsync(a => a.Id != sourceId);
+        Assert.Equal(sourceId, variation.DerivedFromId);
+        Assert.Equal(1, variation.DerivedFromVersion);
+    }
+
+    [Fact]
+    public async Task Ai_tool_refuses_a_variation_source_from_another_conversation_or_another_kind()
+    {
+        var (_, foreignId) = await NewArtifactAsync(Svg, kind: "gambar");
+        var conversationId = await NewConversationAsync();
+        var (docConversation, docId) = await NewArtifactAsync("teks", kind: "dokumen");
+        await using var db = NewContext();
+        var isi = System.Text.Json.JsonSerializer.Serialize(Svg);
+
+        var foreign = await ToolDispatcher.ExecuteAsync(Context(db, conversationId), ToolDefinitions.BuatArtifact,
+            $$"""{"jenis":"gambar","judul":"V","isi":{{isi}},"turunan_dari":"{{foreignId}}"}""", CancellationToken.None);
+        var wrongKind = await ToolDispatcher.ExecuteAsync(Context(db, docConversation), ToolDefinitions.BuatArtifact,
+            $$"""{"jenis":"gambar","judul":"V","isi":{{isi}},"turunan_dari":"{{docId}}"}""", CancellationToken.None);
+
+        Assert.True(foreign.IsError);
+        Assert.True(wrongKind.IsError);
+        Assert.Equal(2, await db.Artifacts.CountAsync()); // tidak ada artifact baru
+    }
+
     [Fact]
     public async Task Save_creates_a_new_version_and_keeps_the_old_one()
     {
