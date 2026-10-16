@@ -111,3 +111,4 @@
 .canvas-skeleton { min-height: 180px; cursor: default; background: linear-gradient(90deg, var(--ns-surface-2) 25%, var(--ns-muted) 50%, var(--ns-surface-2) 75%); background-size: 200% 100%; animation: canvas-shimmer 1.4s linear infinite; }
 @keyframes canvas-shimmer { to { background-position: -200% 0; } }
 .canvas-lineage { margin: 8px 14px 0; font-size: var(--ns-text-base-sm); }
+.canvas-new-group { display: inline-flex; align-items: center; gap: 8px; }

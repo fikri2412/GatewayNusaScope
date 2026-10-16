@@ -447,6 +447,11 @@ function ArtifactEditor({ summary, hidden, onChanged, onDeleted, onDirtyChange, 
   )
 }
 
+/** Urutan tombol "buat baru". */
+const NEW_KINDS: ArtifactKind[] = ['dokumen', 'diagram', 'gambar', 'spreadsheet', 'kode']
+
+const NEW_LABEL: Record<ArtifactKind, string> = { dokumen: 'Dokumen', diagram: 'Diagram', gambar: 'Gambar (AI)', spreadsheet: 'Spreadsheet', kode: 'Kode' }
+
 type CanvasPanelProps = {
   conversationId: string
   artifacts: ArtifactSummary[]
@@ -468,6 +473,7 @@ type CanvasPanelProps = {
  */
 export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelect, onClose, onChanged, onAskAi, aiBusy }: CanvasPanelProps) {
   const [visited, setVisited] = useState<ReadonlySet<string>>(new Set())
+  const [showOtherKinds, setShowOtherKinds] = useState(false)
   const [dirtyIds, setDirtyIds] = useState<ReadonlySet<string>>(new Set())
   const [language, setLanguage] = useState<string>('text')
   const [creating, setCreating] = useState(false)
@@ -565,6 +571,28 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
     onSelect(artifacts.find((a) => a.id !== id)?.id ?? null)
   }
 
+  // Tombol "buat baru" mengikuti konteks: artifact yang sedang dibuka menentukan jenis yang ditawarkan (diagram → hanya
+  // diagram). Tanpa artifact terpilih semua jenis tampil; jenis lain bisa dibuka lewat "Jenis lain…".
+  const shownKinds: ArtifactKind[] = !active || showOtherKinds ? NEW_KINDS : [active.kind]
+
+  const newButton = (kind: ArtifactKind) => {
+    if (kind === 'gambar') {
+      return (
+        <span key={kind} className="canvas-new-group">
+          <button type="button" className="ghost-button" onClick={() => setShowGenerate((o) => !o)} aria-expanded={showGenerate}>+ Gambar (AI)</button>
+          {(images.length > 0 || pending) && (
+            <button type="button" className="ghost-button" onClick={() => setShowGallery((o) => !o)} aria-pressed={showGallery}>Galeri ({images.length})</button>
+          )}
+        </span>
+      )
+    }
+    return (
+      <button key={kind} type="button" className="ghost-button" onClick={() => void create(kind)} disabled={creating}>
+        + {NEW_LABEL[kind]}
+      </button>
+    )
+  }
+
   return (
     <aside className="canvas" aria-label="Canvas" hidden={!open}>
       <header className="canvas-head">
@@ -582,17 +610,17 @@ export function CanvasPanel({ conversationId, artifacts, activeId, open, onSelec
         </button>
       </header>
       <div className="canvas-new">
-        <button type="button" className="ghost-button" onClick={() => void create('dokumen')} disabled={creating}>+ Dokumen</button>
-        <button type="button" className="ghost-button" onClick={() => void create('diagram')} disabled={creating}>+ Diagram</button>
-        <button type="button" className="ghost-button" onClick={() => setShowGenerate((o) => !o)} aria-expanded={showGenerate}>+ Gambar (AI)</button>
-        {(images.length > 0 || pending) && (
-          <button type="button" className="ghost-button" onClick={() => setShowGallery((o) => !o)} aria-pressed={showGallery}>Galeri ({images.length})</button>
+        {NEW_KINDS.filter((k) => shownKinds.includes(k)).map((k) => newButton(k))}
+        {shownKinds.includes('kode') && (
+          <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
+            {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
         )}
-        <button type="button" className="ghost-button" onClick={() => void create('spreadsheet')} disabled={creating}>+ Spreadsheet</button>
-        <button type="button" className="ghost-button" onClick={() => void create('kode')} disabled={creating}>+ Kode</button>
-        <select className="canvas-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Bahasa untuk artifact kode baru">
-          {CODE_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-        </select>
+        {active && (
+          <button type="button" className="text-button" onClick={() => setShowOtherKinds((o) => !o)} aria-expanded={showOtherKinds}>
+            {showOtherKinds ? 'Sembunyikan jenis lain' : 'Jenis lain…'}
+          </button>
+        )}
         {error && <span className="error" role="alert">{error}</span>}
       </div>
       {showGenerate && <GenerateImageForm busy={aiBusy} onSubmit={askImage} />}
