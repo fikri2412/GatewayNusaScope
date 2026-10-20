@@ -13,8 +13,9 @@ public static class QueueTypes
 public static class JobTypes
 {
     public const string ExcelRead = "ExcelRead", Analyze = "Analyze", Pdf = "Pdf",
-        DocumentRead = "DocumentRead", DocumentAnalyze = "DocumentAnalyze";
-    public static readonly string[] All = [ExcelRead, Analyze, Pdf, DocumentRead, DocumentAnalyze];
+        DocumentRead = "DocumentRead", DocumentAnalyze = "DocumentAnalyze",
+        DiagramPlan = "DiagramPlan", MermaidRender = "MermaidRender";
+    public static readonly string[] All = [ExcelRead, Analyze, Pdf, DocumentRead, DocumentAnalyze, DiagramPlan, MermaidRender];
 }
 
 public static class MessageRoles

@@ -9,6 +9,8 @@ interface Props {
   className?: string
 }
 
+const TALL_RATIO = 2.5
+
 /**
  * Pratinjau PNG/JPEG ber-JWT: blob diambil lewat fetch ber-Authorization, bukan `<img src>` ke endpoint
  * (tag img tidak membawa header). URL objek dicabut saat unmount/ganti lampiran dan fetch dibatalkan,
@@ -23,6 +25,9 @@ export function AttachmentImage({ attachment, className }: Props) {
   const current = preview?.downloadUrl === attachment.downloadUrl ? preview : null
   const src = current?.src ?? null
   const error = current?.error ?? null
+  // Gambar sangat tinggi (mis. diagram alur panjang) dibaca dengan lebar penuh + gulir, bukan dikecilkan ke tinggi layar.
+  const [tallSrc, setTallSrc] = useState<string | null>(null)
+  const tall = src !== null && tallSrc === src
 
   useEffect(() => {
     if (!previewable) return
@@ -56,16 +61,24 @@ export function AttachmentImage({ attachment, className }: Props) {
           <button
             type="button"
             ref={thumb}
-            className="attachment-thumb"
-            onClick={() => dialog.current?.showModal()}
+            className={`attachment-thumb${tall ? ' tall' : ''}`}
+            onClick={() => {
+              dialog.current?.showModal()
+              // Fokus awal jatuh ke tombol Tutup di dasar; gambar tinggi harus mulai dari atasnya.
+              if (dialog.current) dialog.current.scrollTop = 0
+            }}
             aria-label={`Perbesar ${attachment.fileName}`}
           >
-            <img src={src} alt={`Pratinjau ${attachment.fileName}`} />
+            <img
+              src={src}
+              alt={`Pratinjau ${attachment.fileName}`}
+              onLoad={(e) => setTallSrc(e.currentTarget.naturalHeight > e.currentTarget.naturalWidth * TALL_RATIO ? src : null)}
+            />
           </button>
           {/* <dialog> native: Esc dan klik backdrop menutup sendiri, tanpa dependency. */}
           <dialog
             ref={dialog}
-            className="attachment-dialog"
+            className={`attachment-dialog${tall ? ' tall' : ''}`}
             aria-label={`Pratinjau besar ${attachment.fileName}`}
             onClose={() => thumb.current?.focus()} // fokus kembali ke thumbnail, termasuk di browser yang tidak memfokuskan tombol saat klik
             onClick={(e) => {

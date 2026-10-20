@@ -46,6 +46,7 @@ internal static class DirectReply
             JobTypes.Analyze when policy.Detail == DetailMendalam => FormatAnalysis(job.OutputJson) is { } text ? (text, null) : null,
             JobTypes.DocumentAnalyze => FormatDocument(job.OutputJson) is { } document ? (document, null) : null,
             JobTypes.Pdf => await FormatPdfAsync(job, db, ct),
+            JobTypes.MermaidRender => await FormatDiagramAsync(job, db, ct),
             _ => null,
         };
     }
@@ -83,6 +84,27 @@ internal static class DirectReply
         {
             return null;
         }
+    }
+
+    /// <summary>Teks + lampiran PNG; lampiran harus output milik percakapan job ini (id asing → jalur AI, bukan dikirim).</summary>
+    private static async Task<(string Text, string? AttachmentIdsJson)?> FormatDiagramAsync(Job job, AppDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(job.OutputJson)) return null;
+        DiagramRenderResult result;
+        try
+        {
+            result = DiagramRenderResult.Parse(job.OutputJson);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        var id = Guid.Parse(result.AttachmentId);
+        if (!await db.Attachments.AsNoTracking()
+                .AnyAsync(a => a.Id == id && a.ConversationId == job.ConversationId && a.Kind == AttachmentKinds.Output, ct))
+            return null;
+        return (result.ToText(), JsonSerializer.Serialize(new[] { id }));
     }
 
     /// <summary>

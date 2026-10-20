@@ -73,14 +73,5 @@ public sealed class PdfHandler(DbContextOptions<AppDbContext> dbOptions, FileSto
         }
     }
 
-    private static string CleanFileName(string title)
-    {
-        Span<char> buffer = stackalloc char[title.Length];
-        var length = 0;
-        foreach (var c in title)
-            if (!char.IsControl(c) && !"<>:\"/\\|?*".Contains(c)) buffer[length++] = c;
-        ReadOnlySpan<char> name = buffer[..length];
-        name = name.Trim(" .");
-        return name.IsEmpty ? "Laporan Analisis Data.pdf" : string.Concat(name, ".pdf");
-    }
+    private static string CleanFileName(string title) => OutputFiles.CleanName(title, ".pdf", "Laporan Analisis Data");
 }

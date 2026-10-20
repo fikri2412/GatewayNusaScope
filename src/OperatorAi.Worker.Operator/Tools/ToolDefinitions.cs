@@ -8,7 +8,7 @@ public static class ToolDefinitions
     public const string AnalisisFile = "analisis_file", AnalisisDokumen = "analisis_dokumen",
         BuatLaporanPdf = "buat_laporan_pdf", CekStatus = "cek_status", CariWeb = "cari_web",
         FetchUrl = "fetch_url", BuatArtifact = "buat_artifact", BacaArtifact = "baca_artifact",
-        PerbaruiArtifact = "perbarui_artifact";
+        PerbaruiArtifact = "perbarui_artifact", BuatAlurLogika = "buat_alur_logika";
 
     public static JsonArray All() => (JsonArray)JsonNode.Parse("""
         [
@@ -58,6 +58,24 @@ public static class ToolDefinitions
                   "langsung": { "type": "boolean", "description": "true bila user cukup diberi lampiran PDF-nya apa adanya; false/absen bila isinya perlu dijelaskan ulang di chat" }
                 },
                 "required": ["judul"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "buat_alur_logika",
+              "description": "Membuat gambar alur logika (flowchart PNG) dari PRD: teks PRD di chat atau lampiran PDF bertext. Hasilnya lampiran PNG di chat, hanya dari yang tertulis di PRD; asumsi dan bagian yang belum dijelaskan dicatat terpisah. Untuk diagram yang akan diedit user pakai buat_artifact jenis diagram. Hasil tidak tersedia sebelum job selesai. Bukan untuk ilustrasi umum, PDF scan, atau gambar.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "judul": { "type": "string", "description": "Judul singkat diagram (maksimal 200 karakter); dipakai sebagai nama file" },
+                  "tujuan": { "type": "string", "description": "Bagian atau alur apa dari PRD yang digambar, dalam kalimat user (mis. seluruh alur, hanya alur pembayaran)" },
+                  "attachment_id": { "type": "string", "description": "attachment_id lampiran PDF berisi PRD; kosongkan bila PRD berupa teks di chat" },
+                  "sumber_pesan": { "type": "string", "enum": ["ini", "sebelumnya"], "description": "Hanya untuk PRD teks: ini = PRD ada di pesan user ini (bawaan, minimal 200 karakter); sebelumnya = PRD ada di pesan user sebelumnya" },
+                  "langsung": { "type": "boolean", "description": "true bila user cukup diberi gambar beserta catatannya apa adanya; false/absen bila hasilnya perlu dijelaskan atau disesuaikan di chat" }
+                },
+                "required": ["judul", "tujuan"]
               }
             }
           },

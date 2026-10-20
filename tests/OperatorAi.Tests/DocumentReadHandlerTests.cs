@@ -94,6 +94,49 @@ public class DocumentReadHandlerTests : DocumentTestBase
         Assert.Empty(output.GetProperty("warnings").EnumerateArray());
     }
 
+    private static string TextOnlyInput(Guid attachmentId) =>
+        JsonSerializer.Serialize(new { attachmentId, visual = false, textOnly = true, supportsVision = false });
+
+    /// <summary>
+    /// Alur logika 6D hanya memakai teks: PDF scan/campuran tidak butuh model vision, tetapi halaman yang tidak dibaca
+    /// tetap dilaporkan di warnings (tidak diam-diam hilang) dan tidak ada halaman visual.
+    /// </summary>
+    [Fact]
+    public async Task Text_only_mode_needs_no_vision_and_reports_the_pages_it_did_not_read()
+    {
+        var conversation = await NewConversationAsync();
+        var scanned = await UploadAsync(conversation, "scan.pdf", DocumentFixtures.ScannedPdf());
+        var mixed = await UploadAsync(conversation, "campuran.pdf", DocumentFixtures.MixedPdf());
+        var figure = await UploadAsync(conversation, "bagan.pdf", DocumentFixtures.TextWithFigurePdf());
+
+        var scan = await ReadAsync(Handler(), await NewJobContextAsync(conversation, JobTypes.DocumentRead, TextOnlyInput(scanned)));
+        Assert.Empty(scan.GetProperty("visualPages").EnumerateArray());
+        Assert.Equal(0, scan.GetProperty("extractedChars").GetInt32());
+        Assert.Contains("Halaman 1 tidak memuat teks", Assert.Single(scan.GetProperty("warnings").EnumerateArray()).GetString());
+
+        // Halaman 2 hanya gambar: dibaca sebagai teks kosong dan dilaporkan; halaman 1 tetap terbaca.
+        var campuran = await ReadAsync(Handler(), await NewJobContextAsync(conversation, JobTypes.DocumentRead, TextOnlyInput(mixed)));
+        Assert.Empty(campuran.GetProperty("visualPages").EnumerateArray());
+        Assert.True(campuran.GetProperty("extractedChars").GetInt32() > 0);
+        Assert.Contains("Halaman 2 tidak memuat teks", Assert.Single(campuran.GetProperty("warnings").EnumerateArray()).GetString());
+
+        // Halaman bertext yang menyisipkan gambar: teksnya dipakai, gambarnya dilaporkan tidak dibaca.
+        var bagan = await ReadAsync(Handler(), await NewJobContextAsync(conversation, JobTypes.DocumentRead, TextOnlyInput(figure)));
+        Assert.Empty(bagan.GetProperty("visualPages").EnumerateArray());
+        Assert.Contains("ALUR-PRD", bagan.GetProperty("pages")[0].GetProperty("text").GetString());
+        Assert.Contains("Halaman 1 memuat gambar/grafik yang tidak dibaca", Assert.Single(bagan.GetProperty("warnings").EnumerateArray()).GetString());
+    }
+
+    [Fact]
+    public async Task Text_only_mode_rejects_an_image_file_as_invalid_input()
+    {
+        var conversation = await NewConversationAsync();
+        var image = await UploadAsync(conversation, "gambar.png", DocumentFixtures.HalvesPng());
+        var context = await NewJobContextAsync(conversation, JobTypes.DocumentRead, TextOnlyInput(image));
+
+        await Assert.ThrowsAsync<DocumentInputException>(() => Handler().HandleAsync(context, CancellationToken.None));
+    }
+
     [Fact]
     public async Task Visual_true_marks_every_page_of_a_text_pdf()
     {

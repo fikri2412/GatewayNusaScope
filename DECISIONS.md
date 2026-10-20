@@ -1,6 +1,8 @@
 # Catatan Keputusan
 
-> **6C selesai acceptance terisolasi (2026-10-13), disusul kebijakan runtime terpusat: [`IMPROVEMENTS.md` §15–16](IMPROVEMENTS.md#16-kebijakan-runtime-terpusat-pasca-6c). [`HANDOFF_6C.md`](HANDOFF_6C.md) tetap historis; 6D belum dimulai. Gateway GA-01–GA-04 sudah diterapkan ke runtime utama (2026-10-14, [`IMPROVEMENTS.md` §18.6](IMPROVEMENTS.md#186-rollout-utama-gateway-ga-01ga-04-2026-10-14)); rollout chatbot terpisah.**
+> **6D selesai implementasi dan smoke terisolasi (2026-10-19): [`IMPROVEMENTS.md` §19](IMPROVEMENTS.md#19-hasil-implementasi-dan-verifikasi-6d); entri terakhir di bawah.**
+
+> **6C selesai acceptance terisolasi (2026-10-13), disusul kebijakan runtime terpusat: [`IMPROVEMENTS.md` §15–16](IMPROVEMENTS.md#16-kebijakan-runtime-terpusat-pasca-6c). [`HANDOFF_6C.md`](HANDOFF_6C.md) tetap historis (6D baru dikerjakan 2026-10-19, lihat atas). Gateway GA-01–GA-04 sudah diterapkan ke runtime utama (2026-10-14, [`IMPROVEMENTS.md` §18.6](IMPROVEMENTS.md#186-rollout-utama-gateway-ga-01ga-04-2026-10-14)); rollout chatbot terpisah.**
 
 Diisi oleh agent setelah setiap fase. Format:
 
@@ -1121,3 +1123,13 @@ Keluhan: AI terus menyebut/menawarkan Excel dan PDF di chat biasa. Akar: `Operat
 - **Kompatibilitas snapshot:** `FileTools` tidak `JsonRequired` dan hanya masuk hash bila bukan `auto`, jadi tiket/job lama di antrean tetap sah (tanpa cutover). `PromptHash` (`CoreInstructions`) tidak berubah.
 - **Urutan rollout:** deploy gateway lebih dulu (katalog status menolak key yang tidak dikenal di `effectiveValues`), baru chatbot.
 - **Batas:** `auto` memakai lampiran apa pun di percakapan itu; setelah user pernah melampirkan file, tool file tetap ditawarkan di giliran berikutnya.
+
+## 2026-10-19 — 6D: PRD → gambar alur logika (PNG)
+
+- **Scope (persetujuan user "kerjakan 6D, PRD → PNG"):** hanya 6D. GA-05–GA-12, Kelompok C lain, bug gateway web, rollout, Docker/worker reuse tetap terpisah.
+- **Dibangun:** tool `buat_alur_logika`; job `DiagramPlan` (AI → graf JSON `DiagramGraph`) dan `MermaidRender` (tanpa AI: serializer aplikasi → `@mermaid-js/mermaid-cli` 12.0.0 + `puppeteer` 25.14.0 terpin di `tools/mermaid-render` → PNG → lampiran output); `DocumentRead` mendapat flag `textOnly` (PDF bertext dengan gambar tidak butuh model vision); `DirectReply`/`DiagramRenderResult` untuk balasan dengan catatan asumsi; label job dan pratinjau gambar tinggi di web. Tanpa migration, tanpa NuGet baru, gateway tidak berubah.
+- **Keputusan:** (1) `htmlLabels=true` + escape entity oleh serializer — mode non-HTML menampilkan `&#34;` literal sehingga `< > " &` PRD rusak; (2) batas graf = konstanta kode, deadline/piksel/path = opsi lokal `Mermaid:*`, bukan key Pengaturan gateway (hindari allowlist+migration constraint §16); (3) PDF hanya teks — scan/gambar ditolak terminal, halaman tak terbaca dicatat server; (4) render di luar transaksi, hanya publish memegang kunci baris job (heartbeat lease tidak boleh terblokir; ada regression); (5) tanpa `--no-sandbox`, environment anak daftar putih, `--host-resolver-rules` memblokir resolusi nama, stderr Mermaid tidak masuk pesan error/log Info (bisa memuat label PRD); (6) pesan teks harus ≥ 200 karakter agar dianggap PRD.
+- **Bug ditemukan test:** `sourceMessageId` bertipe string melempar `InvalidOperationException` dari `TryGetInt64`; diperbaiki (`ValueKind` diperiksa dulu). Masalah dev server Vite: `index.css` tersaji kosong setelah HMR (cache); restart memulihkan, bukan bug kode.
+- **Verifikasi:** build 0 warning; full suite **560 lulus / 0 gagal / 0 dilewati**; web `tsc`/`oxlint`/check bersih; smoke browser → API → worker → gateway privat (salinan DB) → OpenCode Go `deepseek-v4.1-flash` (7 panggilan, semua `opencode-go`, 200, tanpa fallback): PRD teks → PNG 1636×4848 (7,9 MP), PDF bertext → PNG 1656×4836, download 401/200/404. Rincian, angka, dan batas: `IMPROVEMENTS.md` §19.
+- **Batas:** Linux belum diuji; diagram bergantung kualitas model (smoke PDF: satu sambungan yang tidak ada di PRD); worker mati paksa tidak mematikan proses anak; thumbnail gambar tinggi hanya memotong bagian atas.
+- **Rollout belum dilakukan:** build semua project chatbot, `npm ci` di `tools/mermaid-render`, isi `Mermaid:CliPath` Worker.Specialist, restart API/web. Build lokal menimpa `bin/Debug` (DLL worker dev) tanpa menyentuh database/secret/proses utama. Satu `dotnet ef database update` tanpa override koneksi sempat dijalankan ke database utama secara tidak sengaja; tidak ada migration tertunda (Fase6CCanvas terpasang sejak 2026-10-16) sehingga tidak berubah.

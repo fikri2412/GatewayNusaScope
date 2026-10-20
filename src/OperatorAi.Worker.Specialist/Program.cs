@@ -4,6 +4,7 @@ using OperatorAi.Shared.Options;
 using OperatorAi.Shared.Queue;
 using OperatorAi.Shared.Storage;
 using OperatorAi.Worker.Specialist;
+using OperatorAi.Worker.Specialist.Diagrams;
 using OperatorAi.Worker.Specialist.Documents;
 using OperatorAi.Worker.Specialist.Handlers;
 
@@ -29,6 +30,10 @@ builder.Services.AddSingleton<IJobHandler, AnalyzeHandler>();
 builder.Services.AddSingleton<IJobHandler, PdfHandler>();
 builder.Services.AddSingleton<IJobHandler, DocumentReadHandler>();
 builder.Services.AddSingleton<IJobHandler, DocumentAnalyzeHandler>();
+builder.Services.Configure<MermaidOptions>(builder.Configuration.GetSection(MermaidOptions.Section));
+builder.Services.AddSingleton<IMermaidRenderer, MermaidCliRenderer>();
+builder.Services.AddSingleton<IJobHandler, DiagramPlanHandler>();
+builder.Services.AddSingleton<IJobHandler, MermaidRenderHandler>();
 builder.Services.AddHostedService<SpecialistWorker>();
 
 await builder.Build().RunAsync();
