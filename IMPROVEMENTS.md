@@ -2,7 +2,7 @@
 
 Tanggal: 2026-10-14; 6D ditambahkan 2026-10-19. **6A1–6C, 6D, kebijakan runtime terpusat, Kelompok A, Kelompok B serta gateway GA-01–GA-04 diimplementasikan dan diverifikasi; hasil 6D di §19. Gateway GA-01–GA-04 kemudian di-rollout ke runtime utama atas permintaan user (§18.6).** Rancangan di `DESIGN.md` §15; hasil 6A1 §11, 6A2 §12, 6B §13–14, 6C §15, kontrol runtime §16, desain/backlog chatbot §17, Kelompok A §17.4, Kelompok B §17.5 dan 6D §19. Keputusan `DECISIONS.md` tetap berlaku. Rollout gateway ini tidak menerapkan migration/backend/UI chatbot.
 
-**Pembaruan 2026-10-20:** review gateway sample "MSS AI Gateway" dan backlog gateway **GB-01–GB-14** ada di §20. Itu usulan, belum disetujui, dan tidak mengubah kode/runtime.
+**Pembaruan 2026-10-20:** review gateway sample "MSS AI Gateway" dan backlog gateway **GB-01–GB-14** ada di §20. Status per task (SIAP/DITAHAN) dan petunjuk untuk agent ada di §20.7. Bagian itu sendiri tidak mengubah kode atau runtime.
 
 ## 1. Tujuan dan batas perubahan
 
@@ -1081,7 +1081,7 @@ Database `AiGateway_6D` dan `OperatorAi_6D` dibuang (terverifikasi tidak ada), g
 
 ## 20. Perbandingan dengan gateway sample (MSS AI Gateway) dan backlog GB
 
-Tanggal 2026-10-20. **Review dan usulan saja: tidak ada kode, konfigurasi, migration, secret, atau runtime yang diubah. Checklist GB-01–GB-14 (§20.7) belum disetujui untuk dikerjakan.** Fokus saat ini gateway; chatbot, Docker, dan bug gateway web lama tetap terpisah.
+Tanggal 2026-10-20. **Review dan usulan; bagian ini sendiri tidak mengubah kode, konfigurasi, migration, secret, atau runtime. Task GB-01–GB-14 (§20.7) hanya boleh dikerjakan bila berstatus SIAP.** Fokus saat ini gateway; chatbot, Docker, dan bug gateway web lama tetap terpisah.
 
 ### 20.1 Sumber, metode, dan batas bukti
 
@@ -1177,9 +1177,44 @@ Tanggal 2026-10-20. **Review dan usulan saja: tidak ada kode, konfigurasi, migra
 | Kontrak upstream rapuh: tanpa `User-Agent` dan timeout 5 menit membuat OAuth Codex "berpikir selamanya" (`docs/incident-opencode-chatgpt-oauth-thinking-forever-20260826.md`) | Sudah ada (GA-01/02, header session Go); GB-01 menambah deadline total |
 | Variabel `HTTPS_PROXY` global untuk proxy bertarget menjatuhkan semua agen (`tools/antigravity-mitm/INCIDENT-2026-07-24-proxy-landmine.md`) | Tidak berlaku (tanpa MITM) |
 
-### 20.7 Backlog gateway (usulan, belum disetujui)
+### 20.7 Backlog gateway dan petunjuk untuk agent
 
 Prioritas: **P1** bukti kuat dan risiko rendah; **P2** berguna, butuh desain kecil atau keputusan; **P3** ditunda sampai ada konsumen nyata. Acceptance wajib consumer-visible dan memakai failing-before/passing-after, bukan tes wiring.
+
+#### Petunjuk untuk agent (cloud atau lokal)
+
+Bagian ini dibuat agar agent yang hanya membaca file ini tahu apa yang boleh dikerjakan. Baca §20.1–§20.6 untuk konteks (jangan menyalin fitur sample yang ada di §20.5), lalu kerjakan **hanya task berstatus SIAP**, dari atas ke bawah. Status awal ini diusulkan; pemilik repo mengubah kolom Status untuk memberi atau menahan izin.
+
+Contoh perintah ke agent: "Baca IMPROVEMENTS.md §20.7 dan kerjakan task berstatus SIAP sesuai petunjuknya, mulai dari yang teratas; satu task per commit."
+
+| ID | Status | Urutan / syarat | Titik masuk awal (verifikasi sebelum mengedit) |
+| --- | --- | --- | --- |
+| GB-01 | SIAP | gelombang 1, pertama | `gateway/src/AiGateway.Core/Proxy/ChatProxy.cs` (loop route ±baris 126, `TryRouteAsync` ±277, deadline per route ±334), `ForwardingTargets.cs`, `RouteSelector.cs`, opsi `Proxy:*` di `gateway/src/AiGateway.Core/Options/GatewayOptions.cs`; test terkait: `ProxyTests`, `RestDeadlineTests`, `StreamReliabilityTests` |
+| GB-02 | SIAP | gelombang 1, setelah GB-01; migration, jangan paralel dengan GB-03 | `gateway/src/AiGateway.Api/Endpoints/DataPlaneEndpoints.cs:47-48` (SessionId), `gateway/src/AiGateway.Core/Domain/Entities.cs` (`UsageLog` ±baris 300), `gateway/src/AiGateway.Core/Data/GatewayDbContext.cs` (mapping `usage_logs` ±332), `gateway/src/AiGateway.Core/Reports/UsageReports.cs`, route usage di `AdminResourceEndpoints.cs`, UI `gateway/web/src/pages/TenantPages.tsx` |
+| GB-03 | SIAP | gelombang 1, setelah GB-02 | `UsageReports.cs`, `AdminResourceEndpoints.cs`, `TenantPages.tsx`; kolom yang dibutuhkan sudah ada di `usage_logs` |
+| GB-04 | SIAP | gelombang 2, setelah GB-01–GB-03 selesai | `SettingsEndpoints.cs` (plane `/client/api`, auth key yang sama), `PolicyEngine.cs` |
+| GB-05 | SIAP | gelombang 2 | `Program.cs` di `AiGateway.Api` (`/healthz`), `RequestProtection.cs` (Meter), `MaintenanceWorker.cs` |
+| GB-06 | SIAP | gelombang 2 | `gateway/scripts/`, `.github/workflows/` (kosong), `Directory.Build.props` di root, `gateway/README.md` §7 |
+| GB-07 | DITAHAN | butuh persetujuan pemilik: mengubah semantik kuota G2 | tidak dikerjakan |
+| GB-08 | DITAHAN | hanya bila ada model family Google yang dibutuhkan | tidak dikerjakan |
+| GB-09 sampai GB-13 | DITAHAN | menunggu konsumen nyata atau keputusan produk (§20.9) | tidak dikerjakan |
+| GB-14 | DITAHAN | dokumen; menunggu klien yang benar-benar diuji | tidak dikerjakan |
+
+Titik masuk yang hanya disebut nama file berasal dari inventaris §20 dan belum dicek satu per satu: cari file itu dulu, jangan menebak path.
+
+Aturan kerja (berasal dari aturan repo dan pelajaran di `DECISIONS.md`):
+
+1. **Cabang dan commit.** Kerja di cabang `claude/<nama-task>` lalu buka PR ke `main` (pola PR #1–#4). Satu task = satu commit. Jangan push langsung ke `main` kecuali pemilik meminta.
+2. **Test (`TESTING.md`).** Agent cloud **tidak menjalankan `dotnet test`** dalam bentuk apa pun. Tulis test sebagai bagian task, tetapi jangan klaim lulus; di ringkasan akhir dan `DECISIONS.md` tulis "unit test belum dijalankan (dijalankan di agent lokal)". Boleh `dotnet build gateway/AiGateway.slnx` dan `npm run build` di `gateway/web` bila SDK/Node tersedia. Agent lokal menjalankan `dotnet test` penuh sebelum task dinyatakan selesai.
+3. **SDK.** Sesi cloud sebelumnya tidak punya .NET SDK (unduhan diblokir). Jika `dotnet --version` gagal, tetap tulis kode dan test, tandai "belum dikompilasi", dan daftarkan langkah lokal: `dotnet build` lalu `dotnet ef migrations has-pending-model-changes` lalu `dotnet test`. `Directory.Build.props` memakai `TreatWarningsAsErrors=true`, jadi satu warning memecah build; tulis kode tanpa warning (nullable, variabel tak terpakai).
+4. **Migration (GB-02, GB-03 bila perlu indeks).** Additif saja. Migration punya `[DbContext(typeof(GatewayDbContext))]` dan `[Migration("<timestamp>_Nama")]`, `GatewayDbContextModelSnapshot.cs` ikut diperbarui; migration tanpa atribut tidak terlihat oleh EF. Tanpa SDK: tulis manual, sertakan skrip SQL idempotent di `gateway/sql/` (pola `ga03-usage-completeness.sql`; awali dengan `SET QUOTED_IDENTIFIER ON` untuk indeks berfilter), dan tandai `has-pending-model-changes` belum dijalankan. Jangan menyentuh database utama. Tabel yang sudah ber-RLS tidak butuh policy baru.
+5. **Test yang ada.** Jangan melemahkan, melewati, atau menghapus test agar build hijau. Bila perilaku lama sengaja berubah, ganti test itu dan jelaskan di `DECISIONS.md` (pola GA-07).
+6. **Lingkup.** Hanya `gateway/`, README gateway, dan dokumen. Jangan menyentuh chatbot (`src/OperatorAi.*`, `web/`), secret, atau konfigurasi runtime. Tanpa dependency baru kecuali task menyebutnya (catat bila ditambah). Tandai batas yang disengaja dengan komentar `ponytail:`.
+7. **Tanpa provider nyata.** Cloud tidak punya key; uji perilaku dengan upstream tiruan seperti test proxy yang ada (`ProxyTests`, harness TCP gaya GA-01).
+8. **Menyelesaikan task.** Centang `[x]` task di daftar bawah, ubah Status di tabel menjadi `SELESAI (belum diverifikasi lokal)` bila test belum dijalankan, tambah entri `DECISIONS.md` dengan format file itu (Yang dikerjakan / Keputusan / Penyimpangan / Hal yang perlu dicek manusia), dan perbarui `gateway/README.md` bila perilaku operasional berubah.
+9. **Bila bukti salah.** Jika bukti di §20 ternyata keliru atau acceptance tidak bisa dipenuhi, berhenti di task itu, catat di `DECISIONS.md`, dan jangan mengarang atau mengecilkan acceptance.
+
+Daftar task (acceptance ada di tiap butir):
 
 - [ ] **GB-01 (P1) — Ketahanan routing: cooldown route dan deadline total.** Bukti: inventaris menunjukkan provider mati dicoba route-demi-route di tiap request, 120 dtk per route, tanpa deadline total; sample punya `CooldownTracker`. Rancangan: state cooldown di memori per `(tenant, route)` dengan `TimeProvider`, dipicu hanya kegagalan provider (timeout, unreachable, 5xx, 429 dengan `Retry-After` dihormati), bukan 4xx karena request klien; route yang sedang cooldown dilewati kecuali satu-satunya route (tetap dicoba, bukan 502 palsu), dengan satu probe half-open; `Proxy:RequestDeadlineSeconds` membatasi seluruh rantai route (504 `upstream_timeout`; SSE hanya sampai commit). Klasifikasi berdasar status/kode, **bukan substring pesan** seperti sample. Retry berjitter di route yang sama tidak dibangun. Acceptance: test `TimeProvider` palsu (N gagal → dilewati, TTL → satu probe, sukses → pulih, tenant lain tidak terpengaruh, satu-satunya route tetap dicoba); harness TCP gaya GA-01 dengan tiga route menggantung selesai ≤ deadline total; `attempts` dan `fallback_used` tetap jujur; README §6 mencatat state per proses.
 - [ ] **GB-02 (P1) — `session_id` pada `usage_logs` dan laporan per sesi.** Bukti: sample menyimpan session/turn/parent/branch; kita sudah memvalidasi session id (`DataPlaneEndpoints.cs:47-48`) tetapi tidak menyimpannya; DECISIONS Fase 2 mencatat gateway melaporkan per key, bukan per percakapan. Rancangan: kolom nullable `session_id` (migration additif), indeks `(tenant_id, session_id, created_at)` berfilter, filter `sessionId` di log/CSV, agregat token/biaya per sesi (top N) di laporan tenant. Tidak menambah turn/parent/branch (chatbot sudah memilikinya). Aturan validasi dan penerusan ke Go tidak berubah; nama header ditentukan saat implementasi. Acceptance: sesi valid tampil di log/CSV/agregat; tanpa header → null; header invalid tetap 400; RLS dan isolasi tenant tidak berubah; retensi ikut; chatbot dapat melihat biaya per percakapan.
