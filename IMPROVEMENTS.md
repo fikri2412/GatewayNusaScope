@@ -2,6 +2,8 @@
 
 Tanggal: 2026-10-14; 6D ditambahkan 2026-10-19. **6A1–6C, 6D, kebijakan runtime terpusat, Kelompok A, Kelompok B serta gateway GA-01–GA-04 diimplementasikan dan diverifikasi; hasil 6D di §19. Gateway GA-01–GA-04 kemudian di-rollout ke runtime utama atas permintaan user (§18.6).** Rancangan di `DESIGN.md` §15; hasil 6A1 §11, 6A2 §12, 6B §13–14, 6C §15, kontrol runtime §16, desain/backlog chatbot §17, Kelompok A §17.4, Kelompok B §17.5 dan 6D §19. Keputusan `DECISIONS.md` tetap berlaku. Rollout gateway ini tidak menerapkan migration/backend/UI chatbot.
 
+**Pembaruan 2026-10-20:** review gateway sample "MSS AI Gateway" dan backlog gateway **GB-01–GB-14** ada di §20. Itu usulan, belum disetujui, dan tidak mengubah kode/runtime.
+
 ## 1. Tujuan dan batas perubahan
 
 | Permintaan | Rancangan | Yang tidak perlu dibangun |
@@ -325,6 +327,8 @@ Urutan perbaikan bug: terima detail user -> reproduksi actual route/role -> fail
 ## 7. Perbandingan Sample: apa yang benar-benar dibutuhkan
 
 Objek perbandingan: `Sample/arkana-gateway-main/arkana-gateway-main`. Pembacaan source, bukan asumsi seluruh fitur README siap produksi. Arsip ZIP tidak dijalankan sebagai aplikasi kedua. Path sample pada kolom bukti di bawah relatif terhadap root ekstraksi tersebut.
+
+**Pembaruan 2026-10-20:** folder sample di atas sudah tidak ada; snapshot terbaru ada di `Sample/GATEWAY-main`. Perbandingan tingkat-gateway (routing, cooldown, usage, keamanan, operasi) kini ada di §20 dan menggantikan baris gateway pada tabel berikut; baris PDF/PRD tidak berubah.
 
 | Area | NusaScope / chatbot saat ini | Pelajaran Arkana dan bukti | Keputusan |
 | --- | --- | --- | --- |
@@ -1074,3 +1078,140 @@ Tanggal 2026-10-19. PRD (teks di chat atau PDF bertext) → graf JSON → Mermai
 ### 19.5 Cleanup
 
 Database `AiGateway_6D` dan `OperatorAi_6D` dibuang (terverifikasi tidak ada), gateway/API/Vite lab dihentikan, tab browser ditutup, folder lab (salinan gateway, storage lab, backup, fixture PDF, dist) dan `%TEMP%\mmtest` dihapus; tidak ada proses `chrome-headless-shell`/`dotnet` tersisa. Database, storage, secret, dan proses utama user tidak disentuh (satu `dotnet ef database update` tanpa override koneksi sempat terpicu salah ke database utama: tidak ada migration tertunda — `Fase6CCanvas` sudah terpasang sejak 2026-10-16 — sehingga tidak mengubah apa pun).
+
+## 20. Perbandingan dengan gateway sample (MSS AI Gateway) dan backlog GB
+
+Tanggal 2026-10-20. **Review dan usulan saja: tidak ada kode, konfigurasi, migration, secret, atau runtime yang diubah. Checklist GB-01–GB-14 (§20.7) belum disetujui untuk dikerjakan.** Fokus saat ini gateway; chatbot, Docker, dan bug gateway web lama tetap terpisah.
+
+### 20.1 Sumber, metode, dan batas bukti
+
+- Objek: `Sample/GATEWAY-main/GATEWAY-main` ("MSS AI Gateway": .NET 10, Blazor Server, PostgreSQL 16, Redis, Qdrant, n8n, Docker Compose; enam project `src/AIGateway.*`). Path sample di bawah relatif terhadap root itu; path gateway kita relatif terhadap `gateway/`.
+- Sample di §7 (`Sample/arkana-gateway-main`) sudah tidak ada. Nama file yang dikutip §7 (migration `20260917081000_AllowBrokerSlotReuseAfterTombstone`, `CooldownTracker`) ada di snapshot ini dengan namespace `AIGateway`, jadi snapshot ini tampaknya project yang sama setelah diganti nama **[INFERENCE]**. Perbandingan tingkat-gateway §7 digantikan bagian ini.
+- Metode: baca source, bukan README; sample tidak dibuild atau dijalankan. Lima survei paralel (API/connector/routing; auth/tenancy/limit/keamanan; metering/cache; produk/ops; inventaris gateway kita), lalu spot-check saya: `HasQueryFilter` nol di sample, `RateLimiter.RecordTokenUsageAsync` selalu `true`, CORS `AllowAnyOrigin`, `WebhookDispatcher.EnqueueAsync` tanpa pemanggil, tidak ada endpoint tenant, dan grep nol untuk `embedding`/`OpenTelemetry`/`Prometheus` di source gateway kita.
+- Status: IMPLEMENTED (logika nyata, terhubung ke endpoint/UI), PARTIAL (jalan dengan batas), STUB (mengembalikan data tiruan), DEAD (kode ada tetapi tidak pernah dipanggil), ABSENT (dicari, tidak ada). Itu status source, bukan bukti produksi; `docs/STATUS.md` sample sendiri memisahkan source/build/test dari produksi.
+- Koreksi atas survei: (1) survei produk menyebut canvas/artifact sample ABSENT karena hanya mencari `.razor/.cs`; `wwwroot/chat.js` memuatnya (drawer artifact, preview statis `sandbox=""` + CSP, Mermaid dengan pan/zoom, salin/unduh; tanpa penyimpanan server atau versi), (2) inventaris gateway kita menyebut tidak ada warnings-as-errors; `Directory.Build.props` di root repo menetapkan `TreatWarningsAsErrors=true`, (3) jumlah test sample berbeda antar dokumen (README 1194, `docs/STATUS.md` 2143 per 2026-10-14, hitung statis 1484 `[Fact]/[Theory]`); angka itu bukan hasil run saya.
+- Perbedaan stack bukan celah fitur. Docker/Compose, PostgreSQL, Redis, dan Blazor tidak diadopsi demi paritas; Docker tetap keputusan terpisah (DECISIONS 2026-10-08).
+
+### 20.2 Dimiliki sample, belum dimiliki gateway kita
+
+| Fitur | Status di sample (bukti) | Gateway kita | Keputusan |
+| --- | --- | --- | --- |
+| Cooldown provider setelah kegagalan beruntun | IMPLEMENTED, non-stream, in-memory: 5 gagal/60 dtk → cooldown 30 dtk (`Domain/Services/CooldownTracker.cs:65-135`, 11 test) | ABSENT untuk route model; `ForwardingTargets.cs:8-9` menyebut eligibility bukan health; provider mati dicoba route-demi-route tiap request | **GB-01** |
+| Retry dalam provider dengan backoff/jitter | IMPLEMENTED non-stream: 3 percobaan, dasar 500 ms, cap 30 dtk, full jitter (`RetryPolicy.cs:35-80`); klasifikasi kegagalan memakai substring pesan error (rapuh, pernah salah-klasifikasi "quota") | satu percobaan per route, fallback segera, tanpa backoff | GB-01 (hanya deadline total; backoff tidak dibangun, klasifikasi tetap berdasar status/kode) |
+| Kesehatan provider dari log (healthy/degraded/down) | PARTIAL: `Services/DashboardService.cs:1552-1650`, memuat seluruh riwayat log ke memori (`maxResults:int.MaxValue`) | ABSENT; dashboard produksi tanpa p95/TTFB/fallback rate (angka itu hanya simulasi mockup, DECISIONS 2026-10-08) | **GB-03** |
+| Atribusi sesi pada log (`SessionId`, `TurnIndex`, `ParentRequestId`, `BranchId`) + tampilan per-sesi | IMPLEMENTED (`Persistence/Entities/RequestLogEntity.cs:11-50`, worker backfill) | `usage_logs` hanya `end_user`/`tags`; `GatewayCaller.SessionId` divalidasi tetapi hanya diteruskan ke Go (`DataPlaneEndpoints.cs:47-48`) | **GB-02** |
+| Usage untuk pemanggil API key | IMPLEMENTED: `GET /v1/tokens/usage` (`ChatEndpoints.cs:707-713`), `/profile/api` | hanya admin JWT; `/client/api` baru berisi settings dan app-status | **GB-04** |
+| Reservasi budget atomik | PARTIAL: `UPDATE … WHERE Remaining >= estimate`, lepas sisa, reset per jam (`Services/BudgetEnforcer.cs:39-91`); default off, hanya chat non-stream, hanya tingkat tenant | soft pre-check; overshoot paralel diterima (G2, `PolicyEngine`) | **GB-07** |
+| Adapter Gemini native | IMPLEMENTED: `generateContent`/`streamGenerateContent`, systemInstruction, toolConfig, inlineData, `cachedContentTokenCount` (`AI/Dialects/GeminiDialectTranslator.cs`, `AI/GeminiChatService.cs`) | family `google_generate` dikenali katalog tetapi dilewati, 502 `unsupported_upstream_family` (GA-08) | **GB-08** (kondisional) |
+| `POST /v1/responses` untuk klien | IMPLEMENTED subset: function tools saja; tanpa `previous_response_id`/`store`/`background`/`reasoning`/`text.format`; event SSE + heartbeat (`Endpoints/ResponsesEndpoints.cs:35,334-460,824-1280`) | Responses hanya sebagai family upstream | GB-09 (ditunda) |
+| `POST /v1/embeddings` | PARTIAL: satu upstream hardcoded (`AI/EmbeddingService.cs:39-90`), join `/v1/embeddings` ganda, tanpa test | ABSENT (grep nol) | GB-10 (ditunda) |
+| Pool akun dan afinitas sesi (ChatGPT/Codex) | IMPLEMENTED: round-robin tier, sticky 2 jam/256 per tenant, akun ≥90% kuota dideprioritaskan (`AI/ChatGptAccountPool.cs`) | satu kredensial aktif per provider | GB-13 (ditunda); versi OAuth/langganan tidak diadopsi |
+| Admin API key (`X-Admin-Key`) untuk skrip | PARTIAL: satu secret global, tanpa scope/expiry/atribusi (`Middleware/AdminAuthMiddleware.cs`) | hanya login JWT | GB-11 (versi aman, ditunda) |
+| Login Google (PKCE, allow-list domain) | IMPLEMENTED; allow-list kosong menerima semua akun Google, `email_verified` tidak dicek (`Auth/GoogleLoginEvents.cs:66-104`) | ABSENT (grep nol) | GB-12 (ditunda) |
+| 21 panduan klien `/docs/*` dengan kriteria "marker teks + tool event nyata + readback + log gateway" | IMPLEMENTED (dokumentasi) | README + `examples/` (curl/Python/.NET) | GB-14 |
+| Dockerfile, Compose, baseline schema, skrip deploy-aman/rollback/promote-digest, release-gate | IMPLEMENTED (bash); Compose punya mount host-spesifik, `TEST_FLOOR` 907 vs 2143 test | Windows Service; backup hanya dokumen; CI kosong; tanpa gate | **GB-06** (gate + backup, tanpa Docker); Docker = keputusan terpisah |
+| Exporter metrik | ABSENT: instrumen OTel ada, exporter tidak (`ServiceDefaults`) | dua `Meter` tanpa exporter/paket OTel | **GB-05** (kekurangan kedua pihak) |
+| Health endpoint | STUB: `/health` dan `/health/ready` statis (`ServiceDefaults/EndpointExtensions.cs:15-23`) | `/healthz` ping DB saja | GB-05 |
+
+### 20.3 Dimiliki gateway kita, tidak dimiliki sample
+
+| Kemampuan | Gateway kita (bukti) | Sample (bukti) |
+| --- | --- | --- |
+| Isolasi tenant berlapis | filter global EF + RLS SQL Server pada 20 tabel, `SESSION_CONTEXT`, koneksi `gateway_platform` terpisah (`sql/tenant-security.sql`, `SqlIsolationTests`) | predikat `TenantId` manual per repository; tanpa RLS dan `HasQueryFilter`; `GetAllAsync()` tanpa scope masih ada (`AiProviderRepository.cs:21-22`) |
+| Manajemen tenant | plane platform: tenant, plan, undangan owner, suspend, usage/audit lintas tenant | hanya tenant default seed; tanpa endpoint tenant |
+| Audit control-plane | `audit_logs` append-only untuk role aplikasi | ABSENT; pembuatan/rotasi key tidak tercatat |
+| Auth admin | JWT 15 mnt, refresh rotasi atomik + deteksi pemakaian ulang, lockout 5/15 mnt, rate limit login per IP, hash tiruan anti-enumerasi, RBAC `platform_admin/owner/admin/viewer` | tanpa lockout/MFA; `/admin` memakai satu `ADMIN_API_KEY` global; key yang dibuat lewat admin API selalu jatuh ke tenant default (`CreateApiKeyCommand.cs:43-68`) |
+| Pembatasan API key | IP allow-list (IP/CIDR, fail-closed), expiry, revoke, last-used | tanpa IP allow-list/scope; hanya expiry dan allow-list model; rate limit dan hapus riwayat privasi berbasis **nama** key |
+| Kebijakan berlapis | tenant/project/key: irisan model, cap token terkecil, kuota harian/bulanan, anggaran, rate limit, plan | RPM + in-flight per key; TPM tidak pernah menolak (`RateLimiter.cs:105-111`); budget tenant default off dan hanya chat non-stream |
+| Integritas usage dan biaya | satu baris per request + agregat harian atomik, penanda `usage_incomplete`, harga bertingkat + cache read/write, retensi yang merekonsiliasi agregat | cached token tidak didiskon; antrean metering membuang event saat penuh atau batch gagal tanpa retry; tanpa retensi; grafik memuat seluruh riwayat ke memori |
+| Streaming SSE | deadline route/idle/total, commit setelah event pertama, protocol mismatch → fallback, error terminal, data multi-baris, usage-only disembunyikan (GA-01–GA-12) | jalur stream terpisah tanpa retry/fallback/budget/cache (`ChatEndpoints.cs:339-575`) |
+| Adapter dua arah | Anthropic dan Responses: request, respons, SSE, tool call, strict, refusal, incomplete | Anthropic tanpa gambar dan `max_tokens` selalu 8192; Responses hanya ingress |
+| Pass-through parameter dan multimodal | body diklon utuh (temperature, response_format, dst.), cap `max_tokens` lewat policy, bagian gambar diteruskan | DTO hanya `model/messages/tools/tool_choice/stream/user/prompt_cache_key`; sampling dibuang diam-diam; `content` string saja |
+| Metadata model | `/v1/models` memuat `capabilities` tri-state, `readiness`, `limits.max_output_tokens` | filter allow-list; bentuk katalog Codex bila `client_version` |
+| Anti-SSRF | validasi saat sambung (`ConnectCallback`), tanpa redirect/proxy env/cookie; berlaku untuk provider, katalog, webhook, search | re-validasi per request, DNS tidak di-pin; URL webhook tanpa validasi; Ollama dan stream sengaja tidak dibungkus |
+| Alert + webhook | alert kuota/budget → webhook HMAC bertimestamp, retry/backoff, log pengiriman | dispatcher tidak pernah dipanggil, secret plaintext, tanpa UI |
+| Web Search Hub | Tavily/Exa/Firecrawl, failover, circuit, budget, UI | hanya enum `ToolKind.WebSearch` |
+| Pengaturan aplikasi + status klien | `app_settings` (ETag) dan laporan status | ABSENT |
+| Katalog harga | template provider + sinkron OpenCode Console + harga bertingkat + riwayat | sinkron model per provider; biaya satu tarif input/output per model |
+| Header keamanan dan proxy tepercaya | CSP, nosniff, frame deny, no-referrer; `X-Forwarded-*` hanya dari proxy terdaftar | tanpa header/HSTS; CORS `AllowAnyOrigin` (`Program.cs:194`) |
+| UI admin multi-tenant | SPA React role-aware: dashboard, provider, model, project, key, policy, usage, alert, webhook, user, audit, pengaturan, web search, plane platform | Blazor: tanpa halaman webhook, SLA, audit, manajemen tenant |
+
+### 20.4 Dimiliki keduanya
+
+| Area | Gateway kita | Sample | Catatan |
+| --- | --- | --- | --- |
+| Chat Completions, tool call, SSE | ya | ya | kita lebih lengkap pada parameter dan ketahanan (§20.3) |
+| `GET /v1/models` terfilter policy | ya (+capabilities) | ya (+bentuk Codex) | setara |
+| Fallback antar provider | prioritas lalu acak berbobot | prioritas + cooldown | cooldown belum ada pada kita (GB-01) |
+| Hash API key SHA-256, expiry, revoke | ya | ya | setara |
+| Enkripsi secret provider | Data Protection (DPAPI/sertifikat), purpose per tenant | envelope AES-256-GCM, DEK per secret; rotasi master key ABSENT | trade-off berbeda: kehilangan kunci Data Protection kita membuat semua secret tak terbaca |
+| Rate limit per menit | in-memory satu proses | in-memory satu proses | keduanya tidak siap multi-instance |
+| Health, CI, exporter metrik | ping DB / tidak ada / tidak ada | statis / tidak ada / tidak ada | kekurangan bersama (GB-05, GB-06) |
+| Scope endpoint pada API key, MFA, guardrail PII | tidak ada | tidak ada | tidak diusulkan |
+
+### 20.5 Tidak diadopsi dan alasannya
+
+| Fitur sample | Status | Alasan |
+| --- | --- | --- |
+| Cache respons exact (in-memory, 1024 entri, 300 dtk) dan semantic cache Qdrant | PARTIAL, default off | Kunci tidak memuat tenant/user/key sehingga bocor lintas tenant; filter Qdrant hanya `model`; `_ttl` tidak pernah difilter sehingga tidak kedaluwarsa; dimensi default 768 vs 1536; tanpa test Qdrant. Bila nanti dibutuhkan: opt-in per project, kunci per tenant, TTL ditegakkan |
+| Kompresi input "Slimmer", output "Terse", mode Ponytail | default off, hanya jalur non-stream | Membuang bagian tengah pesan >16.000 karakter diam-diam dan dapat mengubah konten yang dikutip; penghematan token tidak terukur |
+| Prefix prompt stabil, checkpoint, memori/KB, usage→KB | opt-in | Membaca prompt produksi mentah; redaksi hanya regex (key/JWT/email); hash prefix dipakai ulang sebagai session id merusak afinitas; di luar peran gateway |
+| Mode privasi per key dengan hapus riwayat | IMPLEMENTED | Mengaktifkannya menghapus permanen log/usage key itu berdasarkan nama. `usage_logs` kita tidak memuat prompt (isi hanya opt-in `projects.log_content`), jadi manfaatnya kecil; bila perlu: mode agregat-saja per project tanpa hapus riwayat |
+| Template kebijakan (GDPR/PII/Indonesia-PII) | STUB | Tidak ada konsumen di jalur request; memberi kesan kepatuhan yang tidak ditegakkan |
+| SLA | PARTIAL | P50 tidak pernah diisi, P99 = maksimum, uptime tetap 100; digantikan GB-03 yang dihitung dari log |
+| Webhook dispatcher, rotator key pool, `IMcpClient` | DEAD | Tidak pernah dipanggil; admin API membuatnya terlihat siap produksi |
+| MCP server | STUB | `generate_text`, `chat`, `get_usage` adalah stub; hanya `list_models` nyata |
+| Agents, n8n, KB publik | IMPLEMENTED | Di luar peran gateway; `/kb/vault` anonim; n8n lewat cookie `/rest` |
+| Image generation `/v1/images` | STUB | URL `placeholder.example.com`; jalur chat memakai picsum; katalog kita tidak punya model gambar (§17.2) |
+| Konektor langganan/OAuth (ChatGPT/Codex, Gemini via broker CLIProxyAPI), proxy MITM Antigravity, tray/Electron/WPF | IMPLEMENTED | Memakai langganan konsumen atau intersepsi TLS sebagai backend inferensi; bergantung ketentuan penyedia (belum dikaji di sini) dan menambah permukaan operasional besar; gateway kita BYOK API key |
+| Penulisan ulang model diam-diam (`OPENCODE_FORCE_SANDBOX_MODEL` default on di `/v1/responses`, alias Codex gpt-5* → gpt-5.4) | IMPLEMENTED | Menimpa pilihan pemanggil sebagai kebijakan produk; kita menjawab 404 untuk alias tak dikenal dan menjaga snapshot model |
+
+### 20.6 Pelajaran operasional sample yang dipakai
+
+| Pelajaran (sumber) | Penerapan |
+| --- | --- |
+| Telemetri tidak boleh menggagalkan inferensi; audit pasca-respons harus berstempel tenant (`docs/incident-2026-09-07-willy-codex-key-2.md`, `docs/incident-requestlog-tenant-reset-20260921.md`) | Sudah terpenuhi: usage ditulis tanpa token request, audit tenant-NULL lewat koneksi platform. Dipertahankan |
+| Login 200 tidak berarti dashboard bekerja (`docs/incident-login-dashboard-circuit-regression-20260831.md`) | Smoke rollout: login → halaman terproteksi → panggilan API (GB-06) |
+| Identitas rilis bukan tag mutable; gate harus menjumlahkan semua project dan tidak memakai floor basi (`docs/LESSONS_LEARNED.md`, `scripts/release-gate.sh`) | GB-06 |
+| Drift migration: bandingkan skema dan riwayat sebelum stempel; migration tanpa Designer tidak terlihat (`docs/OPERATIONS.md:325-336`) | GB-06: `has-pending-model-changes` + cek `[Migration]` |
+| Kontrak upstream rapuh: tanpa `User-Agent` dan timeout 5 menit membuat OAuth Codex "berpikir selamanya" (`docs/incident-opencode-chatgpt-oauth-thinking-forever-20260826.md`) | Sudah ada (GA-01/02, header session Go); GB-01 menambah deadline total |
+| Variabel `HTTPS_PROXY` global untuk proxy bertarget menjatuhkan semua agen (`tools/antigravity-mitm/INCIDENT-2026-07-24-proxy-landmine.md`) | Tidak berlaku (tanpa MITM) |
+
+### 20.7 Backlog gateway (usulan, belum disetujui)
+
+Prioritas: **P1** bukti kuat dan risiko rendah; **P2** berguna, butuh desain kecil atau keputusan; **P3** ditunda sampai ada konsumen nyata. Acceptance wajib consumer-visible dan memakai failing-before/passing-after, bukan tes wiring.
+
+- [ ] **GB-01 (P1) — Ketahanan routing: cooldown route dan deadline total.** Bukti: inventaris menunjukkan provider mati dicoba route-demi-route di tiap request, 120 dtk per route, tanpa deadline total; sample punya `CooldownTracker`. Rancangan: state cooldown di memori per `(tenant, route)` dengan `TimeProvider`, dipicu hanya kegagalan provider (timeout, unreachable, 5xx, 429 dengan `Retry-After` dihormati), bukan 4xx karena request klien; route yang sedang cooldown dilewati kecuali satu-satunya route (tetap dicoba, bukan 502 palsu), dengan satu probe half-open; `Proxy:RequestDeadlineSeconds` membatasi seluruh rantai route (504 `upstream_timeout`; SSE hanya sampai commit). Klasifikasi berdasar status/kode, **bukan substring pesan** seperti sample. Retry berjitter di route yang sama tidak dibangun. Acceptance: test `TimeProvider` palsu (N gagal → dilewati, TTL → satu probe, sukses → pulih, tenant lain tidak terpengaruh, satu-satunya route tetap dicoba); harness TCP gaya GA-01 dengan tiga route menggantung selesai ≤ deadline total; `attempts` dan `fallback_used` tetap jujur; README §6 mencatat state per proses.
+- [ ] **GB-02 (P1) — `session_id` pada `usage_logs` dan laporan per sesi.** Bukti: sample menyimpan session/turn/parent/branch; kita sudah memvalidasi session id (`DataPlaneEndpoints.cs:47-48`) tetapi tidak menyimpannya; DECISIONS Fase 2 mencatat gateway melaporkan per key, bukan per percakapan. Rancangan: kolom nullable `session_id` (migration additif), indeks `(tenant_id, session_id, created_at)` berfilter, filter `sessionId` di log/CSV, agregat token/biaya per sesi (top N) di laporan tenant. Tidak menambah turn/parent/branch (chatbot sudah memilikinya). Aturan validasi dan penerusan ke Go tidak berubah; nama header ditentukan saat implementasi. Acceptance: sesi valid tampil di log/CSV/agregat; tanpa header → null; header invalid tetap 400; RLS dan isolasi tenant tidak berubah; retensi ikut; chatbot dapat melihat biaya per percakapan.
+- [ ] **GB-03 (P1) — Kesehatan model/provider dari `usage_logs`.** Bukti: `usage_logs` sudah memuat `provider_id`, `latency_ms`, `ttfb_ms`, `attempts`, `fallback_used`, `upstream_status` (`Domain/Entities.cs:300-337`); UI produksi belum menampilkan p50/p95, TTFB, error rate, fallback rate; sample menurunkan status dari log tetapi memuat seluruh riwayat ke memori dan SLA-nya fiktif. Rancangan: endpoint laporan tenant (mis. `GET /admin/api/usage/health?window=`) yang menghitung di SQL per model dan provider dengan jendela ≤ 7 hari, plus panel di Usage. Label menyatakan **diturunkan dari log, bukan probe aktif**; sampel kecil ditandai. Indeks `(tenant_id, created_at)` ditambahkan bila rencana query membutuhkannya (retensi saat ini scan tanpa indeks `created_at`, DECISIONS audit gateway). Acceptance: nilai cocok dengan hitungan manual pada data uji; jendela kosong → "tidak ada data", bukan 0% atau 100%; request denied tidak masuk statistik upstream; tenant lain tidak terlihat; waktu query pada data besar diukur, bukan diasumsikan.
+- [ ] **GB-04 (P2) — Usage dan sisa kuota untuk pemanggil API key.** Bukti: sample `GET /v1/tokens/usage` dan `/profile/api`; kita hanya admin JWT. Rancangan: `GET /client/api/usage` (auth key yang sama dengan `/client/api/settings`, read-only, hanya key itu/project-nya, rentang ≤ 31 hari, tidak mencatat ke `usage_logs`) + sisa kuota efektif dari `PolicyEngine`. Header `X-RateLimit-*` tidak dibangun (tidak ada di sample). Acceptance: key hanya melihat datanya sendiri; revoked/expired/IP salah ditolak seperti data plane; angka sama dengan laporan admin.
+- [ ] **GB-05 (P2) — Liveness/readiness nyata dan exporter metrik opsional.** Bukti: `/healthz` hanya ping DB; kedua gateway punya instrumen tanpa exporter. Rancangan: `/healthz/live` (proses hidup) dan `/healthz/ready` (DB + migration terakhir + worker maintenance terakhir sukses, tanpa probe upstream); exporter Prometheus atau OTLP opsional untuk `AiGateway.Http`/`AiGateway.WebSearch`, nonaktif default dan hanya di listener internal atau dengan auth; label tetap berkardinalitas terbatas. Acceptance: ready 503 saat DB mati atau worker stale; metrik tanpa tenant/key/model bebas; tanpa konfigurasi, perilaku dan build tidak berubah.
+- [ ] **GB-06 (P2) — Gate rilis lokal, skrip backup, CI minimal.** Bukti: `.github/workflows/` kosong; backup hanya dokumen (README §7) padahal rollout GA-03 memakai backup manual `COPY_ONLY`/`CHECKSUM` + zip binari (§18.6); sample punya `release-gate.sh` dan pelajaran gate salah hitung. Rancangan: `scripts/release-gate.ps1` (build `-warnaserror`, seluruh test dijumlahkan lintas project tanpa floor tetap, `dotnet ef migrations has-pending-model-changes` untuk kedua DbContext + semua migration punya `[Migration]`/Designer, `npm run build` dan `lint` gateway/web), `scripts/backup-gateway.ps1` (database `COPY_ONLY` + `CHECKSUM` + `RESTORE VERIFYONLY`, zip binari/wwwroot, peringatan bahwa kunci Data Protection dan DPAPI/sertifikat harus ikut dipulihkan) dan satu workflow CI yang menjalankan gate. Docker/Compose tidak termasuk. Acceptance: gate gagal pada warning baru, test merah, atau migration tanpa Designer; backup lolos `VERIFYONLY` dan restore ke database sementara; skrip tidak menulis secret.
+- [ ] **GB-07 (P2, butuh persetujuan) — Kuota keras opsional (reservasi atomik).** Bukti: G2 mencatat kuota/anggaran soft dengan overshoot paralel; sample `BudgetEnforcer` memakai `UPDATE … WHERE Remaining >= estimate` tetapi default off, hanya chat non-stream, hanya tenant. Rancangan: opt-in per policy, baris penghitung per scope+periode, reservasi estimasi (panjang input + `max_tokens` terklem) sebelum forwarding, penyelesaian dengan usage nyata (usage tidak lengkap = batas bawah + penanda), stream menyelesaikan di akhir. Acceptance: N request paralel tidak melewati batas lebih dari galat estimasi yang didokumentasikan; kegagalan/pembatalan melepas reservasi; request denied tidak memakai jatah; kegagalan penyimpanan tidak menggagalkan jawaban. Mengubah semantik kuota yang diterima di G2, jadi tidak dimulai tanpa persetujuan.
+- [ ] **GB-08 (P2, kondisional) — Adapter `google_generate`.** Bukti: katalog mengenali family tetapi gateway menjawab 502 `unsupported_upstream_family`; sample punya terjemahan Gemini lengkap. Rancangan: `IFamilyAdapter` baru di samping Anthropic/Responses, diuji dengan fixture rekaman. Hanya bila tenant membutuhkan model family Google; tanpa itu tetap ditunda.
+- [ ] **GB-09 (P3) — `POST /v1/responses` untuk klien.** Sample hanya subset function tools tanpa `previous_response_id`/`store`/`background`. Dibangun hanya bila ada klien bergaya Codex yang harus dilayani; reuse terjemahan `ResponsesAdapter` secara terbalik.
+- [ ] **GB-10 (P3) — `POST /v1/embeddings`.** Sample PARTIAL (upstream hardcoded, tanpa test). Bila dibutuhkan: alias model + route + harga + policy + `usage_logs` yang sama dengan chat. Tidak ada konsumen sekarang (chatbot tidak memakai embedding).
+- [ ] **GB-11 (P3) — Token servis admin API.** Sample hanya satu `X-Admin-Key` global tanpa scope/atribusi. Bila dibangun: per tenant, hash SHA-256, scope per area, expiry, audit, dapat dicabut.
+- [ ] **GB-12 (P3) — SSO OIDC (Google/Entra).** Wajib allow-list domain yang fail-closed, `email_verified`, provisioning hanya ke tenant yang mengundang (sample: allow-list kosong menerima semua akun dan membuat user di tenant default). Butuh keputusan identitas.
+- [ ] **GB-13 (P3) — Beberapa kredensial per provider.** Sample: pool ChatGPT nyata, rotator key DEAD. Bangun hanya bila satu key provider menjadi batas kapasitas; kandidat paling sederhana: kredensial berurutan dengan failover saat 401/429, tanpa afinitas.
+- [ ] **GB-14 (P3, dokumen) — Panduan klien OpenAI-compatible dan kriteria penerimaan.** Sample: 21 halaman klien dengan kriteria "marker teks, tool event nyata, readback, log gateway". Tambahkan satu dokumen di `gateway/examples/` hanya untuk klien yang benar-benar diuji; jangan menandai "verified" dari daftar model saja.
+
+**Checklist terbuka §20: 14 (GB-01–GB-14).** Docker/Compose, penyimpanan state bersama untuk multi-instance (rate limit, gerbang konkurensi, klaim webhook), dan SSO tetap keputusan terpisah dan bukan bagian checklist ini.
+
+### 20.8 Catatan dari inventaris gateway kita (bukan dari sample, tidak dijadwalkan)
+
+Dari survei inventaris; belum diverifikasi ulang satu per satu oleh saya.
+
+- Flag `capabilities` (tools/streaming/vision) hanya metadata: `ChatProxy` tidak menolak request yang melanggarnya (grep `SupportsTools` di `Core/Proxy` nol). Chatbot menegakkannya sendiri.
+- Azure OpenAI tidak bisa dikonfigurasi karena `RequireHttpsUri` menolak query string (`?api-version=`).
+- Audit ditulis setelah mutasi dan di luar transaksinya; kegagalan hanya dicatat log. Itu pilihan desain (audit tidak boleh menggagalkan aksi) tetapi berarti satu aksi bisa tanpa jejak.
+- Alias model berlaku tenant-wide, bukan per project; isolasi project hanya lewat key/policy.
+- `job_runs` dan `alert_events` hanya ada di DB, tanpa API/UI. Biaya percobaan fallback yang dibuang tetap tidak terlihat (batas lama GA).
+- Undangan/reset password tidak mengirim email (token tampil di UI/API); chatbot sudah punya SMTP.
+
+### 20.9 Keputusan yang dibutuhkan dari user
+
+1. Mulai dari P1 (GB-01 → GB-03)? Ketiganya tanpa perubahan semantik yang sudah diterima; GB-02 dan GB-03 membutuhkan migration additif.
+2. GB-07 mengubah semantik kuota G2 (soft → keras opsional): setuju atau tetap soft?
+3. Apakah ada konsumen nyata untuk GB-08 (model Google), GB-09 (klien Responses), GB-10 (embeddings), GB-13 (multi-key)? Tanpa itu tetap di P2/P3.
+4. Docker/multi-instance dan SSO tetap menunggu keputusan terpisah.
