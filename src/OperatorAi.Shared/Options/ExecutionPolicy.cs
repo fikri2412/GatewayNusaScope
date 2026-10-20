@@ -24,6 +24,8 @@ public sealed record ExecutionPolicy
     [JsonRequired, Range(1, 64000)] public int? MaxOutputTokens { get; init; }
     [JsonRequired, Required, AllowedValues("ringkas", "normal", "mendalam")] public string Detail { get; init; } = "";
     [JsonRequired, MaxLength(2000)] public string AdditionalInstructions { get; init; } = "";
+    /// <summary>Tidak <c>JsonRequired</c>: snapshot lama tanpa field ini tetap sah dan berarti <c>auto</c> (hash lama tetap cocok).</summary>
+    [AllowedValues(FileToolModes.Auto, FileToolModes.Always)] public string FileTools { get; init; } = FileToolModes.Auto;
     [JsonRequired, Required] public AiRuntimeLimits Ai { get; init; } = AiRuntimeLimits.Default;
     [JsonRequired, Required] public UploadRuntimeLimits Upload { get; init; } = UploadRuntimeLimits.Default;
     [JsonRequired, Required] public DocumentRuntimeLimits Document { get; init; } = DocumentRuntimeLimits.Default;
@@ -45,6 +47,7 @@ public sealed record ExecutionPolicy
             MaxOutputTokens = ai.MaxTokens,
             Detail = response.Detail,
             AdditionalInstructions = prompt.AdditionalInstructions,
+            FileTools = op.FileTools,
             SourceSettingsVersion = sourceSettingsVersion,
             PromptHash = PromptPolicy.Hash,
             Ai = AiRuntimeLimits.FromOptions(ai),
@@ -103,6 +106,8 @@ public sealed record ExecutionPolicy
             else writer.WriteNull("maxOutputTokens");
             writer.WriteString("detail", Detail);
             writer.WriteString("additionalInstructions", AdditionalInstructions);
+            // Hanya bila bukan default: hash snapshot yang dibuat sebelum field ini ada tidak berubah.
+            if (FileTools != FileToolModes.Auto) writer.WriteString("fileTools", FileTools);
             writer.WriteString("sourceSettingsVersion", SourceSettingsVersion);
             writer.WriteString("promptHash", PromptHash);
             writer.WritePropertyName("ai");

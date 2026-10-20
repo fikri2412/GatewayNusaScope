@@ -48,8 +48,10 @@ public sealed class DocumentReadHandler(DbContextOptions<AppDbContext> dbOptions
         var limits = ctx.Policy.Document;
         var (kind, pages, visualPages, warnings) = extension == ".pdf"
             ? DocumentWatchdog.Run(TimeSpan.FromSeconds(limits.WatchdogSeconds), "ekstraksi teks PDF",
-                () => ReadPdf(path, input.Visual, limits, ct), logger ?? NullLogger<DocumentReadHandler>.Instance)
-            : ReadImage(attachment.FileName);
+                () => ReadPdf(path, input.Visual, input.TextOnly, limits, ct), logger ?? NullLogger<DocumentReadHandler>.Instance)
+            : input.TextOnly
+                ? throw new DocumentInputException("Berkas gambar tidak memuat teks yang dapat diekstrak.")
+                : ReadImage(attachment.FileName);
 
         var supportsVision = ModelSnapshot.SupportsVision(ctx.Job.InputJson);
         RequireVision(supportsVision, visualPages, attachment.FileName);
@@ -69,11 +71,12 @@ public sealed class DocumentReadHandler(DbContextOptions<AppDbContext> dbOptions
     /// akan menolak dokumen teks biasa (halaman judul/pembatas) hanya karena arsitektur model.
     /// </summary>
     private static (string Kind, IReadOnlyList<PdfPageContent> Pages, IReadOnlyList<int> VisualPages, IReadOnlyList<string> Warnings)
-        ReadPdf(string path, bool visual, DocumentRuntimeLimits limits, CancellationToken ct)
+        ReadPdf(string path, bool visual, bool textOnly, DocumentRuntimeLimits limits, CancellationToken ct)
     {
         var pages = PdfTextExtractor.Extract(path, limits, ct);
         var visualPages = new List<int>();
         var warnings = new List<string>();
+        if (textOnly) return (DocumentReadOutput.KindPdf, pages, [], TextOnlyWarnings(pages));
 
         if (visual)
         {
@@ -127,7 +130,7 @@ public sealed class DocumentReadHandler(DbContextOptions<AppDbContext> dbOptions
             + "Pilih model yang mendukung gambar lalu kirim ulang permintaan.");
     }
 
-    private static (Guid AttachmentId, bool Visual) ReadInput(string inputJson)
+    private static (Guid AttachmentId, bool Visual, bool TextOnly) ReadInput(string inputJson)
     {
         ReadInputModel? input;
         try
@@ -142,8 +145,27 @@ public sealed class DocumentReadHandler(DbContextOptions<AppDbContext> dbOptions
         var attachmentId = input?.AttachmentId ?? Guid.Empty;
         if (attachmentId == Guid.Empty) throw new InvalidOperationException("attachmentId tidak valid.");
         // visual absen = perilaku bawaan (hanya halaman yang memang perlu); eksplisit true = semua halaman.
-        return (attachmentId, input!.Visual ?? false);
+        return (attachmentId, input!.Visual ?? false, input.TextOnly ?? false);
     }
 
-    private sealed record ReadInputModel(Guid? AttachmentId, bool? Visual);
+    /// <summary>
+    /// Mode teks saja (alur logika 6D): hanya teks terekstrak yang dipakai pemanggil, jadi tidak ada halaman visual dan
+    /// tidak butuh vision. Halaman yang tidak terbaca tetap dilaporkan di <c>warnings</c> supaya tidak diam-diam hilang.
+    /// </summary>
+    private static IReadOnlyList<string> TextOnlyWarnings(IReadOnlyList<PdfPageContent> pages)
+    {
+        var warnings = new List<string>();
+        var blank = pages.Where(p => p.Text.Length == 0).Select(p => p.PageNumber).ToList();
+        var figures = pages.Where(p => p.Text.Length > 0 && p.HasImages).Select(p => p.PageNumber).ToList();
+        if (blank.Count > 0)
+            warnings.Add($"Halaman {PageList(blank)} tidak memuat teks yang dapat diekstrak (kemungkinan scan atau gambar) dan tidak dibaca.");
+        if (figures.Count > 0)
+            warnings.Add($"Halaman {PageList(figures)} memuat gambar/grafik yang tidak dibaca; hanya teksnya yang dipakai.");
+        return warnings;
+    }
+
+    private static string PageList(IReadOnlyList<int> pages) =>
+        string.Join(", ", pages.Take(20)) + (pages.Count > 20 ? $", … (+{pages.Count - 20} halaman)" : "");
+
+    private sealed record ReadInputModel(Guid? AttachmentId, bool? Visual, bool? TextOnly);
 }

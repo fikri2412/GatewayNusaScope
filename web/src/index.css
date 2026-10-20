@@ -89,6 +89,9 @@ button svg, .model-glyph { flex-shrink: 0; }
 .attachment-dialog { max-width: min(92vw, 1100px); max-height: 88dvh; overflow: auto; padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-2xl); background: var(--ns-surface); color: var(--ns-text); box-shadow: var(--ns-shadow-modal); }
 .attachment-dialog::backdrop { background: rgb(26 26 29 / .6); }
 .attachment-dialog img { display: block; max-width: 100%; max-height: 76dvh; margin-bottom: 12px; }
+.attachment-thumb.tall img { width: 260px; max-width: 100%; height: 180px; max-height: none; object-fit: cover; object-position: top; }
+.attachment-dialog.tall { width: min(92vw, 1100px); }
+.attachment-dialog.tall img { width: 100%; height: auto; max-height: none; }
 .attachment-dialog button { min-height: 40px; padding: 0 16px; border: 0; border-radius: var(--ns-radius-md); background: var(--ns-primary); color: var(--ns-surface); }
 
 /* Pemeriksaan sesi awal (mis. tab baru): satu baris status, tanpa kerangka chat. */

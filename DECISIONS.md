@@ -1,6 +1,8 @@
 # Catatan Keputusan
 
-> **6C selesai acceptance terisolasi (2026-10-13), disusul kebijakan runtime terpusat: [`IMPROVEMENTS.md` §15–16](IMPROVEMENTS.md#16-kebijakan-runtime-terpusat-pasca-6c). [`HANDOFF_6C.md`](HANDOFF_6C.md) tetap historis; 6D belum dimulai. Gateway GA-01–GA-04 sudah diterapkan ke runtime utama (2026-10-14, [`IMPROVEMENTS.md` §18.6](IMPROVEMENTS.md#186-rollout-utama-gateway-ga-01ga-04-2026-10-14)); rollout chatbot terpisah.**
+> **6D selesai implementasi dan smoke terisolasi (2026-10-19): [`IMPROVEMENTS.md` §19](IMPROVEMENTS.md#19-hasil-implementasi-dan-verifikasi-6d); entri terakhir di bawah.**
+
+> **6C selesai acceptance terisolasi (2026-10-13), disusul kebijakan runtime terpusat: [`IMPROVEMENTS.md` §15–16](IMPROVEMENTS.md#16-kebijakan-runtime-terpusat-pasca-6c). [`HANDOFF_6C.md`](HANDOFF_6C.md) tetap historis (6D baru dikerjakan 2026-10-19, lihat atas). Gateway GA-01–GA-04 sudah diterapkan ke runtime utama (2026-10-14, [`IMPROVEMENTS.md` §18.6](IMPROVEMENTS.md#186-rollout-utama-gateway-ga-01ga-04-2026-10-14)); rollout chatbot terpisah.**
 
 Diisi oleh agent setelah setiap fase. Format:
 
@@ -1095,3 +1097,50 @@ Keluhan: di layar percakapan kolom "Balas…" berada sebaris dengan model, lampi
 - **Kolom balas kini `textarea`** (sebelumnya `input` satu baris): tumbuh sampai ±8 baris (maks 200 px) lalu menggulir, kembali satu baris saat dikosongkan. Enter mengirim, **Shift+Enter** baris baru, Enter saat memilih kandidat IME tidak mengirim. `aria-label="Tulis balasan"`, placeholder tetap "Balas...".
 - **Tidak berubah:** layar Home (komposer besar), logika kirim/lampiran/batas panjang.
 - **Verifikasi:** `tsc`, lint, build bersih; e2e Chromium 123/123 dengan tiga uji baru (kolom selebar kartu dan di atas bilah alat, tumbuh untuk 4 baris, kembali satu baris).
+
+## 2026-10-16 — Sumber pencarian web sebagai tautan berjudul
+
+Keluhan: jawaban `cari_web` menampilkan "Sumber:" berupa `[1] https://...` mentah.
+
+- **Akar:** `OperatorPrompt` meminta "sitasi nomor atau URL sumber" dan melarang markdown di chat. Renderer `web/src/markdown.ts` sudah mendukung tautan (aman, `target=_blank`).
+- **Perubahan (prompt saja):** jawaban ditutup "Sumber:" + daftar berpoin `- [judul deskriptif](url)`, tanpa URL mentah/nomor, hanya URL dari hasil pencarian; larangan markdown dikecualikan untuk daftar ini. Tanpa perubahan web/backend.
+- **Tindak lanjut (prompt saja tidak cukup):** model masih menulis `[1] https://...` karena hasil tool `cari_web` (`ToolDispatcher.CariWebAsync`) sendiri bernomor `[n]`, berlabel `URL:`, dan menyuruh "sertakan tautan sumber atau nomor rujukan". Kini hasil tool memuat daftar siap salin `- [judul](url)` (kurung judul/URL di-escape) dan menyuruh model menyalinnya persis di bawah "Sumber:"; label `URL:` dan penomoran dihapus.
+- **Batas:** model tetap bisa menyimpang, tetapi instruksi tool dan prompt kini searah; jawaban lama tidak berubah. Perlu restart worker/API yang sedang berjalan (DLL terkunci saat build).
+- **Verifikasi:** `dotnet build` worker Operator 0 warning/0 error; test baru `Cari_web_provides_ready_markdown_source_links`; `ChatbotToolDispatcherTests` 8/8 lulus.
+
+## 2026-10-16 — Daftar model di composer terpotong; toolbar AI Canvas juga di Pratinjau
+
+- **Model picker:** klik "DeepSeek" di bilah balas tidak menampilkan daftar. Akar (direproduksi di Chromium): `.ns-chat-tools` memakai `overflow-x: auto` (dari perubahan bilah satu baris), yang membuat overflow-y ikut `auto` sehingga popover `position: absolute` yang membuka ke atas terpotong. Perbaikan: hapus overflow, ganti `flex-wrap: wrap` (`Composer.css`). Di panel sempit (chat + Canvas) tombol mode Cepat/Mikir dalam kini turun ke baris kedua, bukan digulir.
+- **Toolbar AI Canvas:** keluhan "sulit muncul" karena dokumen buatan AI terbuka di Pratinjau/Sorotan sedangkan bar hanya ada di tab Edit. Kini bar juga muncul saat teks disorot di tab Pratinjau/Sorotan (seleksi browser, `CanvasPanel.tsx`). Bar bukan tooltip melayang; ia strip di atas konten dan menggeser konten ke bawah.
+- **Verifikasi:** Chromium nyata (user uji sementara, percakapan dihapus lewat API): popover 33 opsi tampil penuh; bar AI muncul untuk seleksi keyboard di Edit dan seleksi mouse di Sorotan. `tsc`/`oxlint` bersih. Akun `smoke953522` tersisa di DB dev (tak ada endpoint hapus akun).
+
+## 2026-10-16 — Tool dan instruksi file hanya bila ada lampiran; bisa diatur dari gateway
+
+Keluhan: AI terus menyebut/menawarkan Excel dan PDF di chat biasa. Akar: `OperatorPrompt` berperan "asisten analisis data", instruksi file selalu ada, dan ketiga tool file (`analisis_file`, `analisis_dokumen`, `buat_laporan_pdf`) dikirim di setiap giliran.
+
+- **Perubahan:** `OperatorPrompt` dipecah jadi `RoleInstructions` (umum, kini "asisten serbaguna" + larangan menyebut Excel/CSV/PDF tanpa lampiran/permintaan) dan `FileInstructions`; `OperatorPrompt.For(bool)` dan `ToolDefinitions.For(bool)` memilihnya. `TicketProcessor` memutuskan sekali per tiket: ada lampiran `Upload` di percakapan, atau mode `selalu`.
+- **Pengaturan gateway:** key baru `Operator:FileTools` (`auto` default | `selalu`), namespace `chatbot`, jalur yang sama dengan kontrol lain (`GatewaySettingsProvider` → `ExecutionPolicy.FileTools`, snapshot per tiket, laporan status, katalog `AppStatusService`). Teks peran tetap bisa disesuaikan lewat `Prompt:AdditionalInstructions`.
+- **Kompatibilitas snapshot:** `FileTools` tidak `JsonRequired` dan hanya masuk hash bila bukan `auto`, jadi tiket/job lama di antrean tetap sah (tanpa cutover). `PromptHash` (`CoreInstructions`) tidak berubah.
+- **Urutan rollout:** deploy gateway lebih dulu (katalog status menolak key yang tidak dikenal di `effectiveValues`), baru chatbot.
+- **Batas:** `auto` memakai lampiran apa pun di percakapan itu; setelah user pernah melampirkan file, tool file tetap ditawarkan di giliran berikutnya.
+
+## 2026-10-19 — 6D: PRD → gambar alur logika (PNG)
+
+- **Scope (persetujuan user "kerjakan 6D, PRD → PNG"):** hanya 6D. GA-05–GA-12, Kelompok C lain, bug gateway web, rollout, Docker/worker reuse tetap terpisah.
+- **Dibangun:** tool `buat_alur_logika`; job `DiagramPlan` (AI → graf JSON `DiagramGraph`) dan `MermaidRender` (tanpa AI: serializer aplikasi → `@mermaid-js/mermaid-cli` 12.0.0 + `puppeteer` 25.14.0 terpin di `tools/mermaid-render` → PNG → lampiran output); `DocumentRead` mendapat flag `textOnly` (PDF bertext dengan gambar tidak butuh model vision); `DirectReply`/`DiagramRenderResult` untuk balasan dengan catatan asumsi; label job dan pratinjau gambar tinggi di web. Tanpa migration, tanpa NuGet baru, gateway tidak berubah.
+- **Keputusan:** (1) `htmlLabels=true` + escape entity oleh serializer — mode non-HTML menampilkan `&#34;` literal sehingga `< > " &` PRD rusak; (2) batas graf = konstanta kode, deadline/piksel/path = opsi lokal `Mermaid:*`, bukan key Pengaturan gateway (hindari allowlist+migration constraint §16); (3) PDF hanya teks — scan/gambar ditolak terminal, halaman tak terbaca dicatat server; (4) render di luar transaksi, hanya publish memegang kunci baris job (heartbeat lease tidak boleh terblokir; ada regression); (5) tanpa `--no-sandbox`, environment anak daftar putih, `--host-resolver-rules` memblokir resolusi nama, stderr Mermaid tidak masuk pesan error/log Info (bisa memuat label PRD); (6) pesan teks harus ≥ 200 karakter agar dianggap PRD.
+- **Bug ditemukan test:** `sourceMessageId` bertipe string melempar `InvalidOperationException` dari `TryGetInt64`; diperbaiki (`ValueKind` diperiksa dulu). Masalah dev server Vite: `index.css` tersaji kosong setelah HMR (cache); restart memulihkan, bukan bug kode.
+- **Verifikasi:** build 0 warning; full suite **560 lulus / 0 gagal / 0 dilewati**; web `tsc`/`oxlint`/check bersih; smoke browser → API → worker → gateway privat (salinan DB) → OpenCode Go `deepseek-v4.1-flash` (7 panggilan, semua `opencode-go`, 200, tanpa fallback): PRD teks → PNG 1636×4848 (7,9 MP), PDF bertext → PNG 1656×4836, download 401/200/404. Rincian, angka, dan batas: `IMPROVEMENTS.md` §19.
+- **Batas:** Linux belum diuji; diagram bergantung kualitas model (smoke PDF: satu sambungan yang tidak ada di PRD); worker mati paksa tidak mematikan proses anak; thumbnail gambar tinggi hanya memotong bagian atas.
+- **Rollout belum dilakukan:** build semua project chatbot, `npm ci` di `tools/mermaid-render`, isi `Mermaid:CliPath` Worker.Specialist, restart API/web. Build lokal menimpa `bin/Debug` (DLL worker dev) tanpa menyentuh database/secret/proses utama. Satu `dotnet ef database update` tanpa override koneksi sempat dijalankan ke database utama secara tidak sengaja; tidak ada migration tertunda (Fase6CCanvas terpasang sejak 2026-10-16) sehingga tidak berubah.
+
+## 2026-10-20 — Review gateway sample (MSS AI Gateway) dan backlog GB
+
+- **Scope:** permintaan user "fokus ke Gateway dulu": review `Sample/GATEWAY-main/GATEWAY-main`, daftar fitur yang dimiliki dan tidak dimiliki gateway kita, lalu masukkan ke improvement. Hanya dokumen: `IMPROVEMENTS.md` §20 (+ penunjuk di header dan §7). Tidak ada kode, konfigurasi, migration, secret, build, atau proses yang diubah/dijalankan di repo.
+- **Metode:** lima survei read-only paralel (API/connector/routing; auth/tenancy/limit/keamanan; metering/cache; produk/ops; inventaris gateway kita) berbasis source, lalu spot-check sendiri. Agent `scout` tidak bisa start di sesi ini ("No model selected"), jadi survei memakai agent `task` dengan aturan read-only; satu survei yang outputnya terpotong diminta menulis ke file sementara di `%TEMP%` (dibuang sesudah dipakai).
+- **Koreksi atas survei:** canvas/artifact sample ada di `wwwroot/chat.js` (survei menyebut ABSENT); `Directory.Build.props` root sudah `TreatWarningsAsErrors=true` (inventaris menyebut tidak ada). Sample di §7 (`arkana-gateway-main`) sudah tidak ada; snapshot ini tampaknya project yang sama setelah diganti nama **[INFERENCE]**.
+- **Hasil:** sample unggul pada ketahanan routing (cooldown, retry berjitter), atribusi sesi pada log, usage untuk pemanggil key, reservasi budget atomik, adapter Gemini, endpoint `/v1/responses` dan `/v1/embeddings`, serta tooling operasi (Docker, skrip rilis). Gateway kita unggul pada isolasi tenant (RLS), manajemen tenant, audit, auth admin, integritas usage/biaya, streaming dan adapter dua arah, SSRF, alert/webhook yang berfungsi, web search hub. Sebagian besar "fitur" sample yang tampak lengkap di README ternyata STUB/DEAD (image generation, MCP, webhook, key pool, policy template, SLA) dan tidak ditiru; cache/kompresi sample juga tidak diadopsi (cache lintas tenant, TTL tak ditegakkan).
+- **Backlog usulan GB-01–GB-14** (belum disetujui): P1 cooldown route + deadline total, `session_id` di `usage_logs`, kesehatan provider dari log; P2 usage/sisa kuota untuk klien, readiness + exporter metrik, gate rilis + skrip backup + CI, kuota keras opsional (mengubah semantik G2, butuh persetujuan), adapter `google_generate` kondisional; P3 `/v1/responses`, `/v1/embeddings`, token servis admin, SSO OIDC, multi-kredensial, panduan klien.
+- **Hal yang perlu diputuskan user:** urutan mulai (usulan GB-01 → GB-03), setuju/tidak GB-07, ada/tidaknya konsumen untuk GB-08/09/10/13; Docker, multi-instance, dan SSO tetap keputusan terpisah.
+- **Batas:** status fitur sample adalah hasil baca source, bukan runtime; angka test sample (1194/2037/2143/1484) berbeda antar dokumen dan tidak dijalankan ulang; catatan §20.8 dari inventaris belum diverifikasi ulang satu per satu.
+- **Petunjuk agent (susulan hari yang sama):** atas permintaan user agar agent cloud yang hanya membaca `IMPROVEMENTS.md` tahu apa yang dikerjakan, §20.7 kini memuat tabel Status (SIAP/DITAHAN), urutan gelombang, titik masuk kode, dan aturan kerja (cabang `claude/*` + PR, `TESTING.md`, migration tanpa SDK, lingkup `gateway/`). Status awal **diusulkan oleh asisten**: GB-01–GB-03 gelombang 1 dan GB-04–GB-06 gelombang 2 SIAP; GB-07 dan GB-08 sampai GB-14 DITAHAN. Pemilik repo mengubah kolom Status untuk menyetujui atau menahan. Tidak ada kode yang berubah.

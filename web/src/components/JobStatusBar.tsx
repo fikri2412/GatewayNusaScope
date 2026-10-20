@@ -6,6 +6,8 @@ const LABELS: Record<JobDto['jobType'], string> = {
   Pdf: 'Membuat PDF…',
   DocumentRead: 'Membaca dokumen…',
   DocumentAnalyze: 'Menganalisis dokumen…',
+  DiagramPlan: 'Menyusun alur logika…',
+  MermaidRender: 'Menggambar diagram…',
 }
 
 /** Chip untuk job yang belum selesai; job Done/Failed hilang (hasilnya datang sebagai pesan operator). */

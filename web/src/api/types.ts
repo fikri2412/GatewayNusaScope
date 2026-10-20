@@ -143,7 +143,7 @@ export interface SendMessageResponse {
 
 export interface JobDto {
   id: number
-  jobType: 'ExcelRead' | 'Analyze' | 'Pdf' | 'DocumentRead' | 'DocumentAnalyze'
+  jobType: 'ExcelRead' | 'Analyze' | 'Pdf' | 'DocumentRead' | 'DocumentAnalyze' | 'DiagramPlan' | 'MermaidRender'
   status: 'Pending' | 'Processing' | 'Done' | 'Failed'
   error: string | null
   createdAt: string

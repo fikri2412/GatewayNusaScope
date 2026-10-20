@@ -103,7 +103,8 @@ public sealed class SpecialistWorker(
                 var expectedType = job.JobType switch
                 {
                     JobTypes.Pdf => JobTypes.Analyze,
-                    JobTypes.DocumentAnalyze => JobTypes.DocumentRead,
+                    JobTypes.DocumentAnalyze or JobTypes.DiagramPlan => JobTypes.DocumentRead,
+                    JobTypes.MermaidRender => JobTypes.DiagramPlan,
                     _ => JobTypes.ExcelRead,
                 };
                 dependencyOutput = await db.Jobs.AsNoTracking()

@@ -68,6 +68,24 @@ internal static class DocumentFixtures
         return stream.ToArray();
     }
 
+    /// <summary>PDF satu halaman berisi teks dan gambar sekaligus (PRD bertext yang menyisipkan bagan).</summary>
+    public static byte[] TextWithFigurePdf()
+    {
+        var png = HalvesPng();
+        using var stream = new MemoryStream();
+        Document.Create(document =>
+            document.Page(page =>
+            {
+                page.Size(PageSizes.A4);
+                page.Content().Column(column =>
+                {
+                    column.Item().Text("ALUR-PRD pengguna memilih metode bayar");
+                    column.Item().Height(200).Image(png).FitArea();
+                });
+            })).GeneratePdf(stream);
+        return stream.ToArray();
+    }
+
     /// <summary>PDF satu halaman dengan teks sangat pendek (di bawah ambang) dan tanpa gambar.</summary>
     public static byte[] ShortTextPdf()
     {

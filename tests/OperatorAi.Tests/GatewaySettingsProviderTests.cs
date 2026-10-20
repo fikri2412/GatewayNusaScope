@@ -73,6 +73,7 @@ public class GatewaySettingsProviderTests
          {"key":"Queue:StaleLockMinutes","value":"30","valueType":"int"},
          {"key":"Ai:MaxTokens","value":"800","valueType":"int"},
         {"key":"Response:Detail","value":"ringkas","valueType":"text"},
+        {"key":"Operator:FileTools","value":"selalu","valueType":"text"},
         {"key":"Dispatcher:MaxConcurrentOperators","value":"1","valueType":"int"},
         {"key":"Dispatcher:MaxConcurrentSpecialists","value":"16","valueType":"int"},
         {"key":"Dispatcher:SweepSeconds","value":"300","valueType":"int"},
@@ -93,6 +94,7 @@ public class GatewaySettingsProviderTests
             (policy.MaxToolLoops, policy.MaxHistoryMessages, policy.MaxTokensPerConversation,
                 policy.MaxRetries, policy.StaleLockMinutes, policy.MaxOutputTokens, policy.Detail));
         Assert.Equal(AdminInstructions, policy.AdditionalInstructions);
+        Assert.Equal("auto", policy.FileTools);
 
         var report = provider.CreateReport(NoWork(), 15, DateTimeOffset.UtcNow);
         Assert.Equal("local", report.SyncStatus);
@@ -127,6 +129,7 @@ public class GatewaySettingsProviderTests
                 policy.MaxRetries, policy.StaleLockMinutes, policy.MaxOutputTokens, policy.Detail));
         Assert.Equal("v1", policy.SourceSettingsVersion);
         Assert.Equal(RemotePrompt, policy.AdditionalInstructions);
+        Assert.Equal("selalu", policy.FileTools);
         Assert.Equal(RemotePrompt, config["Prompt:AdditionalInstructions"]);
 
         var synced = provider.CreateReport(NoWork(), 15, DateTimeOffset.UtcNow);
@@ -298,6 +301,7 @@ public class GatewaySettingsProviderTests
     [InlineData("Queue:StaleLockMinutes", "1441", "int")]
     [InlineData("Ai:MaxTokens", "0", "int")]
     [InlineData("Response:Detail", "panjang", "text")]
+    [InlineData("Operator:FileTools", "nanti", "text")]
     [InlineData("Dispatcher:MaxConcurrentOperators", "1.5", "int")]
     [InlineData("Dispatcher:MaxConcurrentOperators", "2", "text")]
     [InlineData("Dispatcher:MaxConcurrentSpecialists", "17", "int")]

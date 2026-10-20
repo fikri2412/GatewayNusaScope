@@ -102,6 +102,7 @@ public sealed class AppStatusService(GatewayDbContext db, AppSettingsService set
         ["Queue:StaleLockMinutes"] = new(SettingValueTypes.Int, 1, 1440, null),
         ["Ai:MaxTokens"] = new(SettingValueTypes.Int, 1, 64000, null),
         ["Response:Detail"] = new(SettingValueTypes.Text, 0, 0, ["ringkas", "normal", "mendalam"]),
+        ["Operator:FileTools"] = new(SettingValueTypes.Text, 0, 0, ["auto", "selalu"]),
         ["Dispatcher:MaxConcurrentOperators"] = new(SettingValueTypes.Int, 1, 32, null),
         ["Dispatcher:MaxConcurrentSpecialists"] = new(SettingValueTypes.Int, 1, 16, null),
         ["Dispatcher:SweepSeconds"] = new(SettingValueTypes.Int, 1, 300, null),

@@ -66,9 +66,9 @@ public abstract class QueueTestBase : IAsyncLifetime
     protected static ExecutionPolicy Policy(int maxToolLoops = 5, int maxHistoryMessages = 40,
         int maxTokensPerConversation = 200000, int maxRetries = 3, int staleLockMinutes = 10,
         int maxOutputTokens = 4096, string detail = "mendalam", string additionalInstructions = "",
-        UploadRuntimeLimits? upload = null, DocumentRuntimeLimits? document = null) =>
+        UploadRuntimeLimits? upload = null, DocumentRuntimeLimits? document = null, string fileTools = FileToolModes.Auto) =>
         ExecutionPolicy.Create(
-            new OperatorOptions { MaxToolLoops = maxToolLoops, MaxHistoryMessages = maxHistoryMessages, MaxTokensPerConversation = maxTokensPerConversation },
+            new OperatorOptions { MaxToolLoops = maxToolLoops, MaxHistoryMessages = maxHistoryMessages, MaxTokensPerConversation = maxTokensPerConversation, FileTools = fileTools },
             new QueueOptions { MaxRetries = maxRetries, StaleLockMinutes = staleLockMinutes },
             new AiOptions { MaxTokens = maxOutputTokens },
             new ResponseOptions { Detail = detail }, new PromptOptions { AdditionalInstructions = additionalInstructions },

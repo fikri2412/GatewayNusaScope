@@ -139,6 +139,27 @@ public class TicketProcessorTests : QueueTestBase
         Assert.Equal((NotifyTypes.MessageCreated, rows[1].Id), (sent.Type, sent.Id));
     }
 
+    [Theory]
+    [InlineData(false, FileToolModes.Auto, false)]   // percakapan tanpa lampiran: tool dan instruksi file disembunyikan
+    [InlineData(true, FileToolModes.Auto, true)]
+    [InlineData(false, FileToolModes.Always, true)]  // gateway memaksa selalu
+    public async Task File_tools_and_instructions_are_offered_only_when_the_conversation_has_an_upload(bool hasUpload, string mode, bool expected)
+    {
+        var conversation = await NewConversationAsync();
+        Guid[] attachments = hasUpload ? [await NewAttachmentAsync(conversation)] : [];
+        var (_, itemId) = await NewUserTicketAsync(conversation, "halo", attachments);
+        await SetQueuePolicyAsync(itemId, Policy(fileTools: mode));
+        var (processor, ai, _) = NewProcessor("run1", new ScriptedAi(_ => Text("Hai!")));
+
+        await processor.HandleAsync(await ClaimAsync("run1"), CancellationToken.None);
+
+        var request = ai.Requests[0];
+        var names = request.Tools!.Select(t => (string)t!["function"]!["name"]!).ToList();
+        Assert.Equal(expected, names.Contains(ToolDefinitions.AnalisisFile));
+        Assert.Equal(expected, request.System.Contains("analisis_file"));
+        Assert.Contains(ToolDefinitions.CariWeb, names);   // tool umum tetap ada
+    }
+
     [Fact]
     public async Task A_tool_call_creates_jobs_atomically_and_the_AI_sees_its_own_call_and_the_result()
     {
@@ -419,6 +440,59 @@ public class TicketProcessorTests : QueueTestBase
         Assert.Single(ai.Requests);                                           // lampiran asing → jalur AI (tanpa lampiran)
         var reply = (await MessagesAsync()).Last();
         Assert.Null(reply.AttachmentIdsJson);
+    }
+
+    private static string DiagramOutput(Guid attachment) => new DiagramRenderResult(attachment.ToString(), "Alur Pembayaran.png",
+        "Alur Pembayaran", "Pembayaran diperiksa saldonya.", 3, 2, ["Alur saat saldo kurang belum dijelaskan."]).ToJson();
+
+    [Fact]
+    public async Task A_finished_diagram_is_delivered_with_its_PNG_and_the_PRD_gaps_without_AI()
+    {
+        var conversation = await NewConversationAsync();
+        var png = await NewAttachmentAsync(conversation, "Alur Pembayaran.png", AttachmentKinds.Output);
+        var (_, itemId) = await NewCallbackTicketAsync(conversation, "buatkan alurnya", JobTypes.MermaidRender,
+            DiagramOutput(png), inputJson: """{"judul":"Alur Pembayaran","langsung":true}""");
+        var (processor, ai, _) = NewProcessor("run1", new ScriptedAi(_ => Text("tidak boleh dipanggil")));
+
+        await processor.HandleAsync(await ClaimAsync("run1"), CancellationToken.None);
+
+        Assert.Empty(ai.Requests);
+        var reply = (await MessagesAsync()).Last();
+        Assert.Contains("Alur Pembayaran", reply.Content);
+        Assert.Contains("3 node", reply.Content);
+        Assert.Contains("Alur saat saldo kurang belum dijelaskan.", reply.Content);
+        Assert.Equal($"[\"{png}\"]", reply.AttachmentIdsJson);
+        Assert.Equal(Statuses.Done, (await GetItemAsync(itemId)).Status);
+    }
+
+    [Fact]
+    public async Task A_diagram_without_the_direct_flag_goes_through_the_AI_with_its_PNG_attached()
+    {
+        var conversation = await NewConversationAsync();
+        var png = await NewAttachmentAsync(conversation, "Alur Pembayaran.png", AttachmentKinds.Output);
+        await NewCallbackTicketAsync(conversation, "buatkan alurnya", JobTypes.MermaidRender,
+            DiagramOutput(png), inputJson: """{"judul":"Alur Pembayaran"}""");
+        var (processor, ai, _) = NewProcessor("run1", new ScriptedAi(_ => Text("Diagramnya sudah jadi.")));
+
+        await processor.HandleAsync(await ClaimAsync("run1"), CancellationToken.None);
+
+        Assert.Contains("Alur saat saldo kurang belum dijelaskan.", Assert.Single(ai.Requests).Messages[^1].Content);
+        Assert.Equal($"[\"{png}\"]", (await MessagesAsync()).Last().AttachmentIdsJson);
+    }
+
+    [Fact]
+    public async Task A_diagram_PNG_from_another_conversation_is_never_attached_or_announced_directly()
+    {
+        var conversation = await NewConversationAsync();
+        var foreign = await NewAttachmentAsync(await NewConversationAsync(), "rahasia.png", AttachmentKinds.Output);
+        await NewCallbackTicketAsync(conversation, "buatkan alurnya", JobTypes.MermaidRender,
+            DiagramOutput(foreign), inputJson: """{"judul":"Alur","langsung":true}""");
+        var (processor, ai, _) = NewProcessor("run1", new ScriptedAi(_ => Text("Selesai.")));
+
+        await processor.HandleAsync(await ClaimAsync("run1"), CancellationToken.None);
+
+        Assert.Single(ai.Requests);                                           // lampiran asing → jalur AI (tanpa lampiran)
+        Assert.Null((await MessagesAsync()).Last().AttachmentIdsJson);
     }
 
     [Fact]
