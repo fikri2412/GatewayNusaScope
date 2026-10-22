@@ -1,7 +1,7 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import { api, downloadFile, errorMessage } from '../api'
 import { canConfigure, useAuth } from '../auth'
-import type { AdminUser, ApiKeyDto, AuditItem, ModelDto, Page, PolicyDto, ProjectDto, Role, UsageBodyDto, UsageLogItem, UsageRow } from '../types'
+import type { AdminUser, ApiKeyDto, AuditItem, ModelDto, Page, PolicyDto, ProjectDto, Role, SessionUsageRow, UsageBodyDto, UsageLogItem, UsageRow } from '../types'
 import { PROJECT_STATUSES, ROLES } from '../types'
 import { Alert, DataTable, EmptyRow, Field, Loading, Modal, PageHeader, Pager, SecretPanel, Toolbar } from '../ui'
 import {
@@ -940,6 +940,7 @@ export function UsagePage() {
   const [modelId, setModelId] = useState('')
   const [keyId, setKeyId] = useState('')
   const [status, setStatus] = useState('')
+  const [sessionId, setSessionId] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const projects = useLoad(useCallback(() => api.get<ProjectDto[]>('/admin/api/projects'), []))
@@ -955,10 +956,27 @@ export function UsagePage() {
           modelId: modelId || undefined,
           keyId: keyId || undefined,
           status: status || undefined,
+          sessionId: sessionId.trim() || undefined,
           page,
           pageSize,
         }),
-      [logFrom, logTo, projectId, modelId, keyId, status, page, pageSize],
+      [logFrom, logTo, projectId, modelId, keyId, status, sessionId, page, pageSize],
+    ),
+  )
+  // Sesi teratas memakai rentang dan filter log yang sama, tanpa filter sesi (itu yang sedang dicari).
+  const sessions = useLoad(
+    useCallback(
+      () =>
+        api.get<SessionUsageRow[]>('/admin/api/usage/sessions', {
+          from: isoOrNull(logFrom),
+          to: isoOrNull(logTo),
+          projectId: projectId || undefined,
+          modelId: modelId || undefined,
+          keyId: keyId || undefined,
+          status: status || undefined,
+          limit: 10,
+        }),
+      [logFrom, logTo, projectId, modelId, keyId, status],
     ),
   )
   const [exportError, setExportError] = useState<string | null>(null)
@@ -977,6 +995,7 @@ export function UsagePage() {
           modelId: modelId || undefined,
           keyId: keyId || undefined,
           status: status || undefined,
+          sessionId: sessionId.trim() || undefined,
         },
         `usage-${logFrom.slice(0, 10)}-${logTo.slice(0, 10)}.csv`,
       )
@@ -1089,6 +1108,15 @@ export function UsagePage() {
               <option value="denied">denied</option>
             </select>
           </Field>
+          <Field label="Sesi">
+            <input
+              type="text"
+              value={sessionId}
+              maxLength={200}
+              placeholder="id sesi persis"
+              onChange={(event) => { setSessionId(event.target.value); setPage(1) }}
+            />
+          </Field>
           <Field label="Baris per halaman">
             <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }}>
               <option value={25}>25</option>
@@ -1106,7 +1134,7 @@ export function UsagePage() {
           <Loading />
         ) : logs.error ? null : (
           <>
-            <DataTable head={['Waktu', 'Request', 'Status', 'HTTP', 'Alasan', 'Input', 'Output', 'Cache', 'Biaya', 'Latensi', 'Attempt', 'Project', 'Model', 'Key', canReadBody ? 'Isi' : '']}>
+            <DataTable head={['Waktu', 'Request', 'Status', 'HTTP', 'Alasan', 'Input', 'Output', 'Cache', 'Biaya', 'Latensi', 'Attempt', 'Sesi', 'Project', 'Model', 'Key', canReadBody ? 'Isi' : '']}>
               {logs.data && logs.data.items.length > 0 ? (
                 logs.data.items.map((log) => (
                   <tr key={log.id}>
@@ -1123,6 +1151,15 @@ export function UsagePage() {
                     <td title={log.usageIncomplete ? costNote : undefined}>{approxMoney(log.cost, log.usageIncomplete)}</td>
                     <td>{log.latencyMs} ms</td>
                     <td>{log.attempts}</td>
+                    <td className="mono" title={log.sessionId ?? undefined}>
+                      {log.sessionId ? (
+                        <button type="button" className="link" onClick={() => { setSessionId(log.sessionId ?? ''); setPage(1) }}>
+                          {log.sessionId.length > 12 ? `${log.sessionId.slice(0, 8)}…` : log.sessionId}
+                        </button>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td className="mono">{log.projectId ? log.projectId.slice(0, 8) : '—'}</td>
                     <td className="mono">{log.modelId ? log.modelId.slice(0, 8) : '—'}</td>
                     <td className="mono">{log.keyId ? log.keyId.slice(0, 8) : '—'}</td>
@@ -1136,11 +1173,47 @@ export function UsagePage() {
                   </tr>
                 ))
               ) : (
-                <EmptyRow colSpan={canReadBody ? 15 : 14} />
+                <EmptyRow colSpan={canReadBody ? 16 : 15} />
               )}
             </DataTable>
             {logs.data ? <Pager page={logs.data.pageNumber} pageSize={logs.data.pageSize} total={logs.data.total} onPage={setPage} /> : null}
           </>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Sesi teratas</h2>
+        <p className="muted">
+          Sepuluh sesi klien dengan biaya terbesar pada rentang dan filter log di atas, dihitung dari log request (mengikuti
+          masa simpan log). Hanya request yang mengirim header <code>x-opencode-session</code>. Klik id sesi untuk memfilter log.
+        </p>
+        {sessions.error ? <Alert>{sessions.error}</Alert> : null}
+        {sessions.loading ? (
+          <Loading />
+        ) : sessions.error ? null : (
+          <DataTable head={['Sesi', 'Request', 'Ditolak', 'Error', 'Token input', 'Token output', 'Biaya', 'Belum lengkap', 'Terakhir']}>
+            {sessions.data && sessions.data.length > 0 ? (
+              sessions.data.map((row) => (
+                <tr key={row.sessionId}>
+                  <td className="mono" title={row.sessionId}>
+                    <button type="button" className="link" onClick={() => { setSessionId(row.sessionId); setPage(1) }}>
+                      {row.sessionId.length > 24 ? `${row.sessionId.slice(0, 20)}…` : row.sessionId}
+                    </button>
+                  </td>
+                  <td>{fmtNumber(row.requests)}</td>
+                  <td>{fmtNumber(row.denied)}</td>
+                  <td>{fmtNumber(row.errors)}</td>
+                  <td title={row.incompleteUsageRequests > 0 ? lowerBoundNote : undefined}>{approx(row.inputTokens, row.incompleteUsageRequests > 0)}</td>
+                  <td title={row.incompleteUsageRequests > 0 ? lowerBoundNote : undefined}>{approx(row.outputTokens, row.incompleteUsageRequests > 0)}</td>
+                  <td title={row.incompleteUsageRequests > 0 ? costNote : undefined}>{approxMoney(row.cost, row.incompleteUsageRequests > 0)}</td>
+                  <td>{fmtNumber(row.incompleteUsageRequests)}</td>
+                  <td>{fmtDateTime(row.lastAt)}</td>
+                </tr>
+              ))
+            ) : (
+              <EmptyRow colSpan={9} />
+            )}
+          </DataTable>
         )}
       </section>
 

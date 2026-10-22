@@ -210,6 +210,18 @@ dotnet ef database update 20261014090000_GA03UsageCompleteness `
 ```
 
 Untuk konfigurasi LocalDB pengembangan, jalankan EF dengan `ASPNETCORE_ENVIRONMENT=Development`.
+
+**GB-02 (`session_id` di log usage).** Migration `20261022090000_GB02UsageSessionId` menambah `usage_logs.session_id`
+(`nvarchar(200)`, nullable) dan indeks berfilter `IX_usage_logs_tenant_id_session_id_created_at`
+`(tenant_id, session_id, created_at) WHERE session_id IS NOT NULL`. Murni additif: baris lama tetap `NULL` (sesi tidak
+diketahui), tanpa backfill dan tanpa perubahan RLS. Pembuatan indeks mengunci `usage_logs` selama build; jalankan di luar jam sibuk
+bila tabel besar. SQL siap pakai: [`sql/gb02-usage-session-id.sql`](sql/gb02-usage-session-id.sql) (idempotent; `sqlcmd ... -b -i
+sql/gb02-usage-session-id.sql`), atau `dotnet ef database update 20261022090000_GB02UsageSessionId` seperti GA-03. Klien menandai sesi dengan
+header `x-opencode-session` (aturan sama dengan §11: satu nilai, 1–200 huruf/angka/`._-`; tanpa header → `NULL`, header tidak valid tetap 400).
+Admin: filter `sessionId` di `GET /admin/api/usage/logs` dan `/usage/export` (kolom CSV `session_id` ditambahkan di akhir),
+`GET /admin/api/usage/sessions?from&to[&projectId&modelId&keyId&status&limit]` untuk sesi teratas menurut biaya (maks 100), dan panel
+"Sesi teratas" di halaman Usage. Laporan sesi dihitung dari `usage_logs`, jadi hanya mencakup log yang belum dihapus retensi dan
+`incompleteUsageRequests` > 0 berarti token/biaya sesi itu batas bawah. Aplikasi klien dengan API key belum bisa membaca laporan ini (itu GB-04).
 Instalasi produksi harus menggunakan koneksi/secret deployment-nya sendiri, bukan LocalDB contoh.
 
 ## 9. Troubleshooting

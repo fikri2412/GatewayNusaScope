@@ -41,8 +41,7 @@ public static class DataPlaneEndpoints
         if (sessionHeader.Count > 0)
         {
             var sessionId = sessionHeader[0];
-            if (sessionHeader.Count != 1 || string.IsNullOrEmpty(sessionId) || sessionId.Length > 200
-                || sessionId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '-' and not '_' and not '.'))
+            if (sessionHeader.Count != 1 || !SessionIds.IsValid(sessionId))
                 return Write(http, await DeniedAsync(recorder, caller, GatewayResponse.Error(
                     400, ErrorTypes.InvalidRequest, "invalid_session_id", "Session ID must contain 1-200 letters, digits, '.', '_' or '-'."), "invalid_session_id"));
             caller = caller with { SessionId = sessionId };

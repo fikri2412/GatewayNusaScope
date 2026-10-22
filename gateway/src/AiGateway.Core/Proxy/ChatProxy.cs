@@ -54,6 +54,7 @@ public sealed class ChatProxy(
             ClientIp = caller.ClientIp,
             UserAgent = caller.UserAgent,
             Tags = caller.Tags,
+            SessionId = caller.SessionId,
         };
 
         async Task<GatewayResponse> Finish(GatewayResponse response, string status, string? reason = null)

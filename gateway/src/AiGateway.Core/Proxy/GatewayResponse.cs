@@ -24,7 +24,10 @@ public sealed record GatewayResponse(int Status, string Body, string? RetryAfter
 /// <summary>Pemanggil yang sudah terautentikasi lewat API key.</summary>
 public sealed record GatewayCaller(ApiKey Key, Guid RequestId, string? ClientIp, string? UserAgent, string? Tags)
 {
-    /// <summary>Identitas session transport, bukan otoritas tenant; hanya diteruskan ke endpoint OpenCode Go.</summary>
+    /// <summary>
+    /// Identitas session transport, bukan otoritas tenant: diteruskan ke endpoint OpenCode Go dan dicatat di <c>usage_logs.session_id</c>
+    /// (GB-02) untuk laporan per sesi.
+    /// </summary>
     public string? SessionId { get; init; }
     public long TenantId => Key.TenantId;
     public long ProjectId => Key.ProjectId;

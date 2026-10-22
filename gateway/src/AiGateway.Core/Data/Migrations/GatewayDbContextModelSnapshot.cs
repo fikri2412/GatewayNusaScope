@@ -1883,6 +1883,11 @@ namespace AiGateway.Core.Data.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("request_id");
 
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("session_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(10)
@@ -1920,6 +1925,9 @@ namespace AiGateway.Core.Data.Migrations
                     b.HasIndex("TenantId", "CreatedAt");
 
                     b.HasIndex("TenantId", "ProjectId", "CreatedAt");
+
+                    b.HasIndex("TenantId", "SessionId", "CreatedAt")
+                        .HasFilter("[session_id] IS NOT NULL");
 
                     b.ToTable("usage_logs", null, t =>
                         {

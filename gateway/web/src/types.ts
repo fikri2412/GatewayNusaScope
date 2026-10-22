@@ -103,6 +103,23 @@ export interface UsageLogItem {
   endUser: string | null
   /** True bila usage belum lengkap: token batas bawah, biaya tercatat bukan tagihan final. */
   usageIncomplete: boolean
+  /** Id sesi klien (header x-opencode-session); null bila klien tidak mengirimnya. */
+  sessionId: string | null
+}
+
+/** Pemakaian satu sesi klien dari log request (mengikuti masa simpan log). */
+export interface SessionUsageRow {
+  sessionId: string
+  requests: number
+  denied: number
+  errors: number
+  inputTokens: number
+  outputTokens: number
+  cost: number
+  /** > 0: token/biaya sesi ini batas bawah. */
+  incompleteUsageRequests: number
+  firstAt: string
+  lastAt: string
 }
 
 export interface Page<T> {

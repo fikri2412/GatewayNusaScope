@@ -21,6 +21,7 @@
   <!-- Tes isolasi SQL menjalankan script RLS dari direktori output. -->
   <ItemGroup>
     <None Include="..\..\sql\tenant-security.sql" Link="sql\tenant-security.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\sql\gb02-usage-session-id.sql" Link="sql\gb02-usage-session-id.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
