@@ -18,7 +18,7 @@ namespace AiGateway.Core.Proxy;
 /// <summary>Satu hasil percobaan ke satu route upstream.</summary>
 internal sealed record UpstreamResult(
     bool Ok, int Status, string Body, bool Retriable, int? UpstreamStatus, int? TtfbMs, string? RetryAfter = null,
-    OpenStream? Stream = null);
+    OpenStream? Stream = null, bool ProviderFault = false);
 
 /// <summary>
 /// Pipeline <c>/v1/chat/completions</c> untuk pemanggil yang sudah terautentikasi (tenant sudah diset di
@@ -33,6 +33,7 @@ public sealed class ChatProxy(
     RequestBodyStore bodyStore,
     OutboundSecurityPolicy outbound,
     TenantConcurrencyGate concurrency,
+    RouteCooldownTracker cooldown,
     TimeProvider clock,
     IOptions<ProxyOptions> options,
     ILogger<ChatProxy> log)
@@ -118,12 +119,36 @@ public sealed class ChatProxy(
                     "Too many requests are already in flight for this tenant; retry shortly.", "1"),
                 UsageStatuses.Denied, "concurrency_limit_exceeded");
 
+        // GB-01: deadline total seluruh rantai route, sampai respons REST utuh atau event SSE pertama. Stream yang sudah
+        // commit tidak lagi dibatasi olehnya (timer dimatikan di bawah); batas stream tetap milik SsePump.
+        using var chain = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        chain.CancelAfter(TimeSpan.FromSeconds(options.Value.RequestDeadlineSeconds));
+
         UpstreamResult? last = null;
         JsonNode? success = null;
         OpenStream? open = null;
         try
         {
-            foreach (var route in RouteSelector.Order(targets.Routes, Random.Shared))
+            var order = RouteSelector.Order(targets.Routes, Random.Shared);
+
+            // GB-01: route yang sedang cooldown dilewati selama masih ada route lain yang boleh dicoba. Bila semua route
+            // yang bisa meneruskan sedang cooldown, satu route (yang cooldown-nya paling cepat habis) tetap dicoba:
+            // permintaan tidak boleh ditolak dengan kegagalan palsu hanya karena riwayat.
+            var cooling = new Dictionary<long, DateTimeOffset>();
+            var forwardable = 0;
+            foreach (var r in order)
+            {
+                if (!targets.IsForwardable(r)) continue;
+                forwardable++;
+                if (cooldown.CoolingUntil(caller.TenantId, r.Id) is { } until) cooling[r.Id] = until;
+            }
+            long? forced = cooling.Count > 0 && cooling.Count == forwardable ? cooling.MinBy(kv => kv.Value).Key : null;
+            var candidateIds = order.Where(r => targets.IsForwardable(r) && (r.Id == forced || !cooling.ContainsKey(r.Id)))
+                .Select(r => r.Id).ToList();
+            // Gerbang probe hanya berarti bila ada alternatif; satu-satunya kandidat selalu dicoba langsung.
+            var gated = candidateIds.Count > 1;
+
+            foreach (var route in order)
             {
                 if (!targets.Providers.TryGetValue(route.ProviderId, out var provider)
                     || !targets.Credentials.TryGetValue(route.ProviderId, out var credential))
@@ -141,13 +166,39 @@ public sealed class ChatProxy(
                     continue;
                 }
 
+                ct.ThrowIfCancellationRequested(); // klien sudah pergi: 499, bukan kegagalan upstream
+                if (chain.IsCancellationRequested) break; // deadline total habis: tidak ada percobaan baru
+                if (route.Id != forced && cooling.TryGetValue(route.Id, out var coolUntil))
+                {
+                    log.LogDebug("Route {RouteId} (provider {ProviderId}) dilewati: cooldown sampai {Until:O}.", route.Id, provider.Id, coolUntil);
+                    continue;
+                }
+                var probe = false;
+                if (gated && !cooldown.TryBegin(caller.TenantId, route.Id, out probe))
+                {
+                    // Probe route ini sedang dipegang request lain. Kandidat terakhir tanpa percobaan sama sekali tetap dicoba.
+                    if (!(entry.Attempts == 0 && route.Id == candidateIds[^1])) continue;
+                }
+
                 entry.Attempts++;
                 entry.ProviderId = provider.Id;
                 // ponytail: percobaan yang gagal lalu ditinggalkan tidak dicatat sendiri, jadi biaya sisi provider
                 // untuk percobaan itu tidak terlihat di usage_logs/usage_daily (plafon: satu baris per permintaan;
                 // upgrade: baris per percobaan).
                 var adapter = family is null ? null : FamilyAdapters.For(family);
-                var attempt = await TryRouteAsync(caller, provider, credential, route, body, streaming, adapter, model.MaxOutputTokens, sw, ct);
+                UpstreamResult attempt;
+                var reported = false;
+                try
+                {
+                    attempt = await TryRouteAsync(caller, provider, credential, route, body, streaming, adapter, model.MaxOutputTokens, sw, ct, chain.Token);
+                    ReportRoute(caller.TenantId, route, attempt, probe);
+                    reported = true;
+                }
+                finally
+                {
+                    // Klien memutus koneksi (atau galat tak terduga): sewa probe dilepas supaya route tidak terkunci.
+                    if (!reported && probe) cooldown.ReleaseProbe(caller.TenantId, route.Id);
+                }
                 entry.UpstreamStatus = attempt.UpstreamStatus;
                 entry.TtfbMs = attempt.TtfbMs;
                 last = attempt;
@@ -173,6 +224,15 @@ public sealed class ChatProxy(
             // Stream yang terbuka memegang slot sampai pompanya selesai (RunStream).
             if (open is null) concurrency.Release(caller.TenantId);
         }
+
+        // Hasil sudah ada: timer deadline total tidak boleh lagi menyentuh apa pun (stream berjalan setelah method ini kembali).
+        if (success is not null || open is not null) chain.CancelAfter(Timeout.InfiniteTimeSpan);
+        // Deadline total terlampaui sebelum ada hasil (dan kegagalan terakhir bukan penolakan permanen dari upstream).
+        var deadlineExpired = success is null && open is null && chain.IsCancellationRequested && !ct.IsCancellationRequested
+            && (last is null || last.Retriable);
+        if (deadlineExpired)
+            last = Failure(504, "upstream_timeout", "The request exceeded the gateway's overall time limit.", retriable: false,
+                upstreamStatus: last?.UpstreamStatus, ttfb: last?.TtfbMs);
 
         entry.FallbackUsed = (success is not null || open is not null) && entry.Attempts > 1;
 
@@ -271,12 +331,14 @@ public sealed class ChatProxy(
 
         // Tidak satu pun route yang dicoba karena semuanya berfamily tidak didukung: alasannya sendiri di log.
         return await Finish(new GatewayResponse(last.Status, last.Body, last.RetryAfter), UsageStatuses.Error,
-            sawUnsupportedFamily && entry.Attempts == 0 ? "unsupported_upstream_family" : "upstream_failed");
+            deadlineExpired ? "request_deadline_exceeded"
+            : sawUnsupportedFamily && entry.Attempts == 0 ? "unsupported_upstream_family" : "upstream_failed");
     }
 
     private async Task<UpstreamResult> TryRouteAsync(
         GatewayCaller caller, Provider provider, ProviderCredential credential, ModelRoute route,
-        JsonObject body, bool streaming, IFamilyAdapter? adapter, int? modelMaxOutput, Stopwatch sw, CancellationToken ct)
+        JsonObject body, bool streaming, IFamilyAdapter? adapter, int? modelMaxOutput, Stopwatch sw, CancellationToken ct,
+        CancellationToken chainCt)
     {
         // Validasi ulang tepat sebelum dipakai: baris provider bisa berubah tanpa lewat provisioning (restore/seed).
         // Gagal di sini berarti permintaan tidak dikirim sama sekali, jadi key provider tidak pernah keluar.
@@ -330,7 +392,8 @@ public sealed class ChatProxy(
         // (ResponseHeadersRead), jadi tanpa ini body yang menggantung menahan slot tenant tanpa batas.
         // Token hanya dipakai sampai hasil dikembalikan; stream yang sudah diserahkan diteruskan SsePump dengan
         // token pembatalan dan batas diam/totalnya sendiri (dispose di bawah menghentikan timer deadline).
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // GB-01: terhubung ke deadline total (yang sendiri terhubung ke klien), bukan langsung ke klien.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(chainCt);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.Value.UpstreamTimeoutSeconds));
         var opCt = deadline.Token;
 
@@ -386,10 +449,10 @@ public sealed class ChatProxy(
             if (status == 429)
                 return new UpstreamResult(false, 429,
                     GatewayResponse.Error(429, ErrorTypes.RateLimit, "upstream_rate_limited", "The provider is rate limiting requests.").Body,
-                    true, status, ttfb, retryAfter);
+                    true, status, ttfb, retryAfter, ProviderFault: true);
             if (status is 404 or 408 or >= 500)
                 return Failure(502, "upstream_error", $"The provider returned an error (HTTP {status}).",
-                    retriable: true, upstreamStatus: status, ttfb: ttfb);
+                    retriable: true, upstreamStatus: status, ttfb: ttfb, providerFault: status != 404);
 
             // Kesalahan permintaan lain (400, 422, ...) diteruskan apa adanya hanya bila berbentuk JSON (format
             // error OpenAI); body lain (mis. halaman HTML dari WAF upstream) diganti error gateway dengan status
@@ -403,8 +466,9 @@ public sealed class ChatProxy(
         {
             // Deadline percobaan, bukan klien: status dan TTFB yang sudah diketahui dipertahankan supaya log
             // membedakan headers yang tak pernah datang dari body yang menggantung setelah headers.
+            // Habis karena deadline total (bukan batas percobaan ini sendiri) tidak menyalahkan provider ini.
             return Failure(504, "upstream_timeout", "The provider did not respond in time.", retriable: true,
-                upstreamStatus: upstreamStatus, ttfb: ttfbMs);
+                upstreamStatus: upstreamStatus, ttfb: ttfbMs, providerFault: !chainCt.IsCancellationRequested);
         }
         catch (ResponseTooLargeException)
         {
@@ -418,9 +482,9 @@ public sealed class ChatProxy(
             // OperationCanceledException; deadline tetap timeout, bukan upstream yang tidak bisa dihubungi.
             if (opCt.IsCancellationRequested && !ct.IsCancellationRequested)
                 return Failure(504, "upstream_timeout", "The provider did not respond in time.", retriable: true,
-                    upstreamStatus: upstreamStatus, ttfb: ttfbMs);
+                    upstreamStatus: upstreamStatus, ttfb: ttfbMs, providerFault: !chainCt.IsCancellationRequested);
             log.LogWarning(ex, "Provider {ProviderId} tidak bisa dihubungi", provider.Id);
-            return Failure(502, "upstream_unreachable", "The provider could not be reached.", retriable: true);
+            return Failure(502, "upstream_unreachable", "The provider could not be reached.", retriable: true, providerFault: true);
         }
         finally
         {
@@ -488,8 +552,27 @@ public sealed class ChatProxy(
         streamOptions["include_usage"] = true;
     }
 
-    private static UpstreamResult Failure(int status, string code, string message, bool retriable, int? upstreamStatus = null, int? ttfb = null) =>
-        new(false, status, GatewayResponse.Error(status, ErrorTypes.Upstream, code, message).Body, retriable, upstreamStatus, ttfb);
+    private static UpstreamResult Failure(int status, string code, string message, bool retriable, int? upstreamStatus = null, int? ttfb = null,
+        bool providerFault = false) =>
+        new(false, status, GatewayResponse.Error(status, ErrorTypes.Upstream, code, message).Body, retriable, upstreamStatus, ttfb,
+            ProviderFault: providerFault);
+
+    /// <summary>
+    /// GB-01: hasil satu percobaan ke <see cref="RouteCooldownTracker"/>. Sukses mereset; kegagalan provider (timeout,
+    /// tidak terjangkau, 408/5xx, 429) dihitung; hasil lain (4xx klien, kredensial/konfigurasi, deadline total) tidak
+    /// mengubah hitungan dan hanya melepas sewa probe milik percobaan ini.
+    /// </summary>
+    private void ReportRoute(long tenantId, ModelRoute route, UpstreamResult attempt, bool probe)
+    {
+        if (attempt.Ok) cooldown.RecordSuccess(tenantId, route.Id);
+        else if (attempt.ProviderFault)
+        {
+            if (cooldown.RecordFailure(tenantId, route.Id, attempt.RetryAfter))
+                log.LogWarning("Route {RouteId} (provider {ProviderId}) masuk cooldown setelah kegagalan provider (HTTP {Status}); dilewati sementara selama masih ada route lain.",
+                    route.Id, route.ProviderId, attempt.Status);
+        }
+        else if (probe) cooldown.ReleaseProbe(tenantId, route.Id);
+    }
 
     private static bool TryParseObject(string text) => ParseObject(text) is not null;
 

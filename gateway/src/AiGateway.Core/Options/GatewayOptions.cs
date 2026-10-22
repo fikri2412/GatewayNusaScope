@@ -52,6 +52,20 @@ public sealed class ProxyOptions
     [Range(1024, 256 * 1024 * 1024)] public int MaxResponseBytes { get; set; } = 8 * 1024 * 1024;
     /// <summary>Permintaan chat yang boleh berjalan bersamaan per tenant; sisanya ditolak 429.</summary>
     [Range(1, 10_000)] public int MaxConcurrentPerTenant { get; set; } = 64;
+    /// <summary>
+    /// GB-01: batas waktu seluruh rantai route (semua percobaan + fallback) sampai respons REST utuh atau event SSE pertama;
+    /// sesudah commit SSE tidak berlaku lagi. Lewat batas → 504 <c>upstream_timeout</c>. Nilai di bawah
+    /// <see cref="UpstreamTimeoutSeconds"/> memangkas satu percobaan; naikkan bila UpstreamTimeoutSeconds sengaja &gt; 180.
+    /// </summary>
+    [Range(1, 3600)] public int RequestDeadlineSeconds { get; set; } = 180;
+    /// <summary>GB-01: lama route dilewati setelah gagal berturut-turut. 0 mematikan cooldown (perilaku sebelum GB-01).</summary>
+    [Range(0, 3600)] public int CooldownSeconds { get; set; } = 30;
+    /// <summary>GB-01: jumlah kegagalan provider berturut-turut (dalam <see cref="CooldownWindowSeconds"/>) yang memicu cooldown.</summary>
+    [Range(1, 100)] public int CooldownFailureThreshold { get; set; } = 3;
+    /// <summary>GB-01: kegagalan yang lebih tua dari ini tidak lagi dihitung berturut-turut.</summary>
+    [Range(1, 3600)] public int CooldownWindowSeconds { get; set; } = 60;
+    /// <summary>GB-01: batas atas cooldown yang berasal dari header <c>Retry-After</c> upstream.</summary>
+    [Range(1, 86400)] public int CooldownMaxSeconds { get; set; } = 300;
 }
 
 /// <summary>Kebijakan login admin: kunci akun sementara, umur sesi, panjang password.</summary>
@@ -114,6 +128,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<PolicyEngine>();
         services.AddSingleton<RequestRateLimiter>();
         services.AddSingleton<TenantConcurrencyGate>();
+        services.AddSingleton<RouteCooldownTracker>();
         services.AddOutboundSecurity(config);
         services.AddScoped<PlatformService>();
         services.TryAddSingleton(TimeProvider.System);

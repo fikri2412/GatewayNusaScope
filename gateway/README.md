@@ -73,6 +73,8 @@ dotnet user-secrets set "Seed:AdminPassword" "<minimal 12 karakter>" --project s
 | `Proxy:UpstreamTimeoutSeconds` | deadline satu route sampai headers + body REST selesai (juga body error / event SSE pertama sebelum commit); setelah commit SSE menjadi batas diam antar baris | 120 s |
 | `Proxy:MaxStreamSeconds` | durasi maksimum pompa SSE, termasuk read, write, flush dan pengiriman error terminal | 900 |
 | `Proxy:MaxConcurrentPerTenant` | permintaan chat bersamaan per tenant; kelebihan ditolak 429 `concurrency_limit_exceeded` | 64 |
+| `Proxy:RequestDeadlineSeconds` | batas waktu seluruh rantai route (semua percobaan + fallback) sampai respons REST utuh atau event SSE pertama; lewat batas → 504 `upstream_timeout` (usage: `request_deadline_exceeded`). Tidak memotong stream yang sudah commit. Naikkan bila `Proxy:UpstreamTimeoutSeconds` sengaja > 180 | 180 s |
+| `Proxy:CooldownSeconds` / `Proxy:CooldownFailureThreshold` / `Proxy:CooldownWindowSeconds` / `Proxy:CooldownMaxSeconds` | cooldown route (GB-01): lama dilewati / jumlah kegagalan provider berturut-turut yang memicunya / jendela "berturut-turut" / batas atas cooldown dari `Retry-After`. `CooldownSeconds=0` mematikan fitur | 30 s / 3 / 60 s / 300 s |
 | `Auth:*` | `MaxFailedLogins`, `LockoutMinutes`, `AccessTokenMinutes`, `RefreshTokenDays`, `MinPasswordLength` | 5 / 15 / 15 / 14 / 12 |
 | `Maintenance:*` | masa simpan body/usage/job/delivery, jadwal worker, batas webhook | lihat `MaintenanceOptions` |
 | `Database:AutoMigrate` | jalankan migration saat start (dev) | `false` |
@@ -135,6 +137,7 @@ ALTER ROLE gateway_platform ADD MEMBER gateway_platform_user;
 - **Log**: 4xx yang memang diharapkan (login gagal, penolakan kebijakan) tercatat di `audit_logs`/`usage_logs`;
   pertimbangkan menurunkan level kategori `Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware` ke `Warning` bila log terlalu ramai.
 - **Health**: `GET /healthz` (200 bila database bisa dihubungi).
+- **Cooldown route (GB-01)**: route yang gagal karena provider (timeout, tidak terjangkau, 408/5xx, 429) `Proxy:CooldownFailureThreshold` kali berturut-turut dilewati selama `Proxy:CooldownSeconds` bila masih ada route lain; sesudahnya tepat satu request mencoba lagi (probe) dan hasilnya memulihkan atau memulai cooldown baru. 429 dengan `Retry-After` langsung cooldown selama nilai itu (dibatasi `CooldownMaxSeconds`). Bila **semua** route yang bisa meneruskan sedang cooldown, satu route (yang paling cepat selesai) tetap dicoba, jadi permintaan tidak pernah ditolak karena riwayat saja. 4xx karena request klien, 401/403/404 dari upstream, dan galat konfigurasi lokal tidak memicu cooldown. State berada di memori **per proses** dan per `(tenant, route)`; hilang saat restart dan tidak dibagi antar-instance. Peringatan log `Route … masuk cooldown` menandai kejadiannya; `usage_logs.attempts`/`fallback_used` hanya menghitung route yang benar-benar dicoba.
 - **Batas satu instance**: rate limit kebijakan, gerbang konkurensi per tenant (`Proxy:MaxConcurrentPerTenant`), dan klaim pengiriman
   webhook disimpan di memori proses — menjalankan lebih dari satu instance gateway melemahkan ketiganya (perlu state bersama).
 - **Webhook**: tiap pengiriman membawa `X-Gateway-Timestamp` (Unix **detik**) dan `X-Gateway-Signature: sha256=<hex>`, yaitu
