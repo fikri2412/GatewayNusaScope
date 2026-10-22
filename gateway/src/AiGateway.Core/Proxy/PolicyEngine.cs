@@ -6,6 +6,23 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AiGateway.Core.Proxy;
 
+/// <summary>Sisa kuota token/request efektif: scope dengan sisa terkecil (<see cref="LimitedBy"/>: tenant, project, key, atau plan).</summary>
+public sealed record QuotaTokens(long Limit, long Used, long Remaining, string LimitedBy, DateTime ResetsAt);
+
+/// <summary>Sisa anggaran bulanan efektif (satuan mata uang yang sama dengan biaya yang dicatat).</summary>
+public sealed record QuotaMoney(decimal Limit, decimal Used, decimal Remaining, string LimitedBy, DateTime ResetsAt);
+
+/// <summary>Batas request per menit terkecil; sisa saat ini tidak dilacak (hitungan jendela ada di memori proses).</summary>
+public sealed record QuotaRate(int Limit, string LimitedBy);
+
+/// <summary>
+/// Batas yang berlaku untuk satu key (GB-04), dihitung dengan aturan yang sama dengan <see cref="PolicyEngine.EvaluateAsync"/>.
+/// Properti null = tidak ada batas jenis itu. Batas bersifat soft: request yang sedang berjalan bisa melewatinya sedikit.
+/// </summary>
+public sealed record ClientQuota(
+    QuotaTokens? DailyTokens, QuotaTokens? MonthlyTokens, QuotaTokens? MonthlyRequests, QuotaMoney? MonthlyBudget,
+    QuotaRate? RequestsPerMinute, int? MaxTokensPerRequest);
+
 /// <param name="Denial">Terisi bila permintaan harus ditolak.</param>
 /// <param name="MaxTokens">Batas output terkecil dari semua kebijakan; NULL = tidak dibatasi kebijakan.</param>
 public sealed record PolicyResult(PolicyDenial? Denial, int? MaxTokens);
@@ -88,6 +105,64 @@ public sealed class PolicyEngine(GatewayDbContext db, RequestRateLimiter limiter
         int? maxOut = MaxRequestTokens(policies);
         return new PolicyResult(null, maxOut);
     }
+
+    /// <summary>
+    /// GB-04: sisa kuota efektif untuk pemanggil ini: untuk tiap jenis batas, scope (tenant/project/key/plan) dengan sisa
+    /// terkecil. Memakai pemakaian dan kebijakan yang sama dengan <see cref="EvaluateAsync"/>; tidak mengubah hitungan apa pun.
+    /// </summary>
+    public async Task<ClientQuota> QuotaAsync(GatewayCaller caller, CancellationToken ct)
+    {
+        var now = clock.GetUtcNow().UtcDateTime;
+        var today = DateOnly.FromDateTime(now);
+        var monthStart = new DateOnly(now.Year, now.Month, 1);
+        var dayReset = DateTime.SpecifyKind(today.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
+        var monthReset = DateTime.SpecifyKind(monthStart.AddMonths(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
+
+        var scopes = new (string Name, long Id)[]
+        {
+            (PolicyScopes.Tenant, caller.TenantId), (PolicyScopes.Project, caller.ProjectId), (PolicyScopes.Key, caller.Key.Id),
+        };
+        var policies = await ActivePoliciesAsync(caller, ct);
+        var plan = await (from t in db.Tenants.AsNoTracking() where t.Id == caller.TenantId
+                          join pl in db.Plans.AsNoTracking() on t.PlanId equals pl.Id select pl).FirstAsync(ct);
+
+        var daily = new List<QuotaTokens>();
+        var monthly = new List<QuotaTokens>();
+        var requests = new List<QuotaTokens>();
+        var budget = new List<QuotaMoney>();
+        foreach (var (name, id) in scopes)
+        {
+            policies.TryGetValue(name, out var p);
+            var needsPlan = name == PolicyScopes.Tenant && (plan.MaxRequestsPerMonth is not null || plan.MaxTokensPerMonth is not null);
+            var hasQuota = p is not null && (p.DailyTokenQuota is not null || p.MonthlyTokenQuota is not null || p.MonthlyBudget is not null);
+            if (!needsPlan && !hasQuota) continue;
+
+            var usage = await UsageAsync(name, id, today, monthStart, ct);
+            if (needsPlan)
+            {
+                if (plan.MaxRequestsPerMonth is { } maxRequests) requests.Add(Tokens(maxRequests, usage.MonthRequests, "plan", monthReset));
+                if (plan.MaxTokensPerMonth is { } maxTokens) monthly.Add(Tokens(maxTokens, usage.MonthTokens, "plan", monthReset));
+            }
+            if (p?.DailyTokenQuota is { } dailyQuota) daily.Add(Tokens(dailyQuota, usage.DayTokens, name, dayReset));
+            if (p?.MonthlyTokenQuota is { } monthlyQuota) monthly.Add(Tokens(monthlyQuota, usage.MonthTokens, name, monthReset));
+            if (p?.MonthlyBudget is { } monthlyBudget)
+                budget.Add(new QuotaMoney(monthlyBudget, usage.MonthCost, Math.Max(0m, monthlyBudget - usage.MonthCost), name, monthReset));
+        }
+
+        QuotaRate? rate = null;
+        foreach (var (name, _) in scopes)
+            if (policies.TryGetValue(name, out var p) && p.RequestsPerMinute is { } perMinute && (rate is null || perMinute < rate.Limit))
+                rate = new QuotaRate(perMinute, name);
+
+        // OrderBy stabil: bila sisa sama, scope yang lebih dulu dievaluasi (plan, tenant, project, key) yang dilaporkan.
+        return new ClientQuota(
+            daily.OrderBy(q => q.Remaining).FirstOrDefault(), monthly.OrderBy(q => q.Remaining).FirstOrDefault(),
+            requests.OrderBy(q => q.Remaining).FirstOrDefault(), budget.OrderBy(q => q.Remaining).FirstOrDefault(),
+            rate, MaxRequestTokens(policies));
+    }
+
+    private static QuotaTokens Tokens(long limit, long used, string by, DateTime resetsAt) =>
+        new(limit, used, Math.Max(0, limit - used), by, resetsAt);
 
     /// <summary>Batas output terkecil dari semua kebijakan aktif pemanggil; NULL = tidak dibatasi kebijakan.</summary>
     public static int? MaxRequestTokens(IReadOnlyDictionary<string, Policy> policies) =>

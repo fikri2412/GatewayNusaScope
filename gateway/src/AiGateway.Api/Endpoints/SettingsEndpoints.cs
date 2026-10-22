@@ -6,6 +6,7 @@ using AiGateway.Core.Audit;
 using AiGateway.Core.Common;
 using AiGateway.Core.Domain;
 using AiGateway.Core.Proxy;
+using AiGateway.Core.Reports;
 using AiGateway.Core.Settings;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Net.Http.Headers;
@@ -35,6 +36,7 @@ public static class SettingsEndpoints
         g.MapDelete("{ns}/{key}", DeleteAsync).RequireAuthorization(Policies.TenantAdmin);
 
         app.MapGet("/client/api/settings", ClientReadAsync);
+        app.MapGet("/client/api/usage", ClientUsageAsync);
         app.MapGet("/admin/api/app-status", StatusListAsync).RequireAuthorization(Policies.TenantViewer);
         app.MapPost("/client/api/app-status", ClientStatusAsync);
         return app;
@@ -83,6 +85,24 @@ public static class SettingsEndpoints
             return Results.StatusCode(StatusCodes.Status304NotModified);
         return Results.Ok(new ClientSettingsResponse(
             snapshot.Version, snapshot.Items.Select(s => new ClientSettingDto(s.Key, s.Value, s.ValueType)).ToList()));
+    }
+
+    /// <summary>
+    /// GB-04: pemakaian dan sisa kuota efektif untuk key pemanggil (hanya datanya sendiri; <c>from</c>/<c>to</c> YYYY-MM-DD, maks 31 hari,
+    /// bawaan 7 hari terakhir). Key yang sama dengan data plane dan penolakan yang sama (dicabut, kedaluwarsa, IP, tenant/project
+    /// ditangguhkan), tetapi read-only dan tidak dicatat sebagai pemakaian AI.
+    /// </summary>
+    private static async Task<IResult> ClientUsageAsync(
+        string? from, string? to, HttpContext http, ApiKeyAuthenticator auth, ClientUsageReport report, CancellationToken ct)
+    {
+        var requestId = Guid.NewGuid();
+        http.Response.Headers["X-Request-Id"] = requestId.ToString();
+        var result = await auth.AuthenticateAsync(
+            http.Request.Headers.Authorization, http.Connection.RemoteIpAddress, http.Request.Headers.UserAgent, null, requestId, ct);
+        if (result.Failure is { } failure)
+            return Results.Text(failure.Body, "application/json", Encoding.UTF8, failure.Status);
+        http.Response.Headers.CacheControl = "no-store";
+        return Results.Ok(await report.RunAsync(result.Caller!, from, to, ct));
     }
 
     /// <summary>
