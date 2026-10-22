@@ -1,0 +1,59 @@
+# GB-06: menjalankan gate rilis gateway (build -warnaserror, drift migration, seluruh test, lint/build UI).
+# Test memakai SQL Server LocalDB, jadi workflow ini berjalan di Windows. Belum pernah dijalankan di CI: bila gagal pertama kali,
+# periksa prasyarat runner (LocalDB, dotnet-ef) sebelum menyimpulkan ada regresi kode. Docker/Compose tidak dipakai.
+name: gateway-gate
+
+on:
+  pull_request:
+    paths:
+      - 'gateway/**'
+      - 'Directory.Build.props'
+      - '.github/workflows/gateway-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gateway/web/package-lock.json
+
+      - name: Pasang dotnet-ef
+        shell: pwsh
+        run: dotnet tool install --global dotnet-ef --version 9.0.*
+
+      - name: Siapkan SQL Server LocalDB
+        shell: pwsh
+        run: |
+          sqllocaldb info
+          sqllocaldb start MSSQLLocalDB
+          sqllocaldb info MSSQLLocalDB
+
+      - name: Gate rilis (hanya gateway)
+        shell: pwsh
+        run: ./gateway/scripts/release-gate.ps1 -SkipChatbot -ResultsDir "$env:RUNNER_TEMP/gate-results"
+
+      - name: Unggah hasil TRX
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-gate-trx
+          path: ${{ runner.temp }}/gate-results/*.trx
+          if-no-files-found: ignore

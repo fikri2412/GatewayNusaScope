@@ -199,6 +199,27 @@ sqlcmd -S <server> -Q "RESTORE DATABASE AiGateway FROM DISK='D:\backup\AiGateway
 Restore ke mesin baru: pulihkan database → pasang sertifikat/kunci DPAPI yang sama → jalankan ulang `sql/tenant-security.sql`
 (kalau RLS dipakai) → start service. **Tanpa kunci yang sama, key provider tidak bisa didekripsi** dan tenant harus mengisi ulang key.
 
+**Skrip backup (GB-06)** — `scripts/backup-gateway.ps1` (PowerShell, `sqlcmd`, autentikasi Windows; tidak menerima atau menulis password/secret):
+
+```powershell
+.\scripts\backup-gateway.ps1 -Label before-upgrade -AppDir C:\AiGateway -RestoreTest
+```
+
+Membuat `BACKUP DATABASE ... COPY_ONLY, CHECKSUM` (tidak mengganggu rantai backup lain), lalu `RESTORE VERIFYONLY ... CHECKSUM`; dengan `-RestoreTest` juga
+memulihkan ke database sementara `<nama>_verify_<waktu>`, memeriksa tabel/migration, lalu menghapusnya; dengan `-AppDir` mengzip binari/wwwroot **tanpa**
+`appsettings.Production.json`, `*.pfx`, `*.pem`, `*.key`, `*.p12`; dan menulis `*.manifest.txt` (SHA-256, ukuran, pengingat pemulihan). Keluaran bawaan:
+`%LOCALAPPDATA%\NusaScope\backups`. **Yang tidak tercakup** dan harus dijaga terpisah: sertifikat/kunci DPAPI (tanpanya key provider tidak terbaca di mesin lain),
+connection string, `Jwt:SigningKey`, dan secret konfigurasi lain. Skrip belum diuji pada database nyata di agent cloud; jalankan dulu terhadap salinan.
+
+**Gate rilis (GB-06)** — `scripts/release-gate.ps1` (lokal) menjalankan: `dotnet build -warnaserror` (gateway dan chatbot), pemeriksaan berkas migration (setiap migration punya
+Designer dengan `[Migration]`/`[DbContext]` yang cocok), `dotnet ef migrations has-pending-model-changes` untuk `GatewayDbContext` dan `AppDbContext`, **seluruh** project test
+(ditemukan otomatis; jumlah test dijumlahkan dari berkas TRX lintas project, tanpa angka minimum yang ditanam; gagal bila ada test gagal/dilewati, tidak ada test yang berjalan, atau
+sebuah project tidak menghasilkan TRX), serta `npm ci` + lint + build UI gateway. Keluar dengan kode 1 bila ada langkah gagal. Prasyarat: .NET SDK 9, `dotnet-ef`
+(`dotnet tool install --global dotnet-ef --version 9.0.*`), SQL Server LocalDB, Node. Opsi: `-SkipChatbot`, `-SkipWeb`, `-SkipTests` (hasilnya bukan stempel rilis), `-AllowSkippedTests`.
+Workflow `.github/workflows/gateway-gate.yml` menjalankan gate yang sama (`-SkipChatbot`) di Windows pada pull request yang menyentuh `gateway/` dan lewat `workflow_dispatch`;
+**belum pernah dijalankan di CI**, jadi prasyarat runner (LocalDB, dotnet-ef) bisa perlu disesuaikan. Smoke rollout manual tetap: login admin → halaman terproteksi → panggilan API
+(login 200 tidak berarti dashboard bekerja), lalu `/healthz/ready`.
+
 ## 8. Upgrade
 
 1. Backup database (lihat §7).
