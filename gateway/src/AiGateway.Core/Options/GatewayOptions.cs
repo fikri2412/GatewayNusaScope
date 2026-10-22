@@ -141,6 +141,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<CurrentActor>();
         services.AddScoped<AuditWriter>();
         services.AddScoped<UsageReports>();
+        services.AddScoped<UsageHealthReport>();
         services.AddScoped<AppSettingsService>();
         services.AddScoped<AppStatusService>();
         services.AddScoped<PublicIdResolver>();

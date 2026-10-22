@@ -1,7 +1,7 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import { api, downloadFile, errorMessage } from '../api'
 import { canConfigure, useAuth } from '../auth'
-import type { AdminUser, ApiKeyDto, AuditItem, ModelDto, Page, PolicyDto, ProjectDto, Role, SessionUsageRow, UsageBodyDto, UsageLogItem, UsageRow } from '../types'
+import type { AdminUser, ApiKeyDto, AuditItem, HealthRow, ModelDto, Page, PolicyDto, ProjectDto, Role, SessionUsageRow, UsageBodyDto, UsageHealth, UsageLogItem, UsageRow } from '../types'
 import { PROJECT_STATUSES, ROLES } from '../types'
 import { Alert, DataTable, EmptyRow, Field, Loading, Modal, PageHeader, Pager, SecretPanel, Toolbar } from '../ui'
 import {
@@ -979,6 +979,8 @@ export function UsagePage() {
       [logFrom, logTo, projectId, modelId, keyId, status],
     ),
   )
+  const [healthWindow, setHealthWindow] = useState<'1h' | '6h' | '24h' | '7d'>('24h')
+  const health = useLoad(useCallback(() => api.get<UsageHealth>('/admin/api/usage/health', { window: healthWindow }), [healthWindow]))
   const [exportError, setExportError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
 
@@ -1054,6 +1056,35 @@ export function UsagePage() {
               <EmptyRow colSpan={8} />
             )}
           </DataTable>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Kesehatan model dan provider</h2>
+        <p className="muted">
+          Diturunkan dari log request pada jendela terpilih, <strong>bukan probe aktif</strong>: provider yang tidak dipakai tidak
+          muncul dan angkanya hanya berubah saat ada request. Hanya request yang diteruskan ke provider; pembatalan klien dan
+          penolakan kebijakan tidak dihitung. Error = 5xx, 429, timeout, atau stream yang putus (4xx dari request klien tidak). Latensi
+          dan TTFB dari request sukses. Provider dikaitkan ke jawaban akhir; percobaan yang gagal lalu dialihkan tidak tercatat sendiri.
+        </p>
+        <Toolbar>
+          <Field label="Jendela">
+            <select value={healthWindow} onChange={(event) => setHealthWindow(event.target.value as typeof healthWindow)}>
+              <option value="1h">1 jam</option>
+              <option value="6h">6 jam</option>
+              <option value="24h">24 jam</option>
+              <option value="7d">7 hari</option>
+            </select>
+          </Field>
+        </Toolbar>
+        {health.error ? <Alert>{health.error}</Alert> : null}
+        {health.loading ? (
+          <Loading />
+        ) : health.error || !health.data ? null : (
+          <>
+            <HealthTable title="Per model" rows={health.data.models} minSample={health.data.minSample} />
+            <HealthTable title="Per provider" rows={health.data.providers} minSample={health.data.minSample} />
+          </>
         )}
       </section>
 
@@ -1218,6 +1249,39 @@ export function UsagePage() {
       </section>
 
       {bodyFor ? <UsageBodyModal log={bodyFor} onClose={() => setBodyFor(null)} /> : null}
+    </>
+  )
+}
+
+const pct = (value: number) => `${(value * 100).toFixed(1)}%`
+const ms = (value: number | null) => (value === null ? '—' : `${fmtNumber(value)} ms`)
+
+/** Tabel kesehatan; jendela tanpa request tampil "Tidak ada data", bukan 0% atau 100%. */
+function HealthTable({ title, rows, minSample }: { title: string; rows: HealthRow[]; minSample: number }) {
+  return (
+    <>
+      <h3>{title}</h3>
+      <DataTable head={['Nama', 'Request', 'Error', 'Fallback', 'Latensi p50', 'Latensi p95', 'TTFB p50', 'TTFB p95', 'Sampel']}>
+        {rows.length > 0 ? (
+          rows.map((row) => (
+            <tr key={row.id ?? row.label}>
+              <td>{row.label}</td>
+              <td>{fmtNumber(row.requests)}</td>
+              <td title={`${fmtNumber(row.failures)} dari ${fmtNumber(row.requests)} request gagal di sisi provider`}>{pct(row.errorRate)}</td>
+              <td title="Porsi request sukses yang dilayani lewat fallback">{row.fallbackRate === null ? '—' : pct(row.fallbackRate)}</td>
+              <td>{ms(row.latencyP50Ms)}</td>
+              <td>{ms(row.latencyP95Ms)}</td>
+              <td>{ms(row.ttfbP50Ms)}</td>
+              <td>{ms(row.ttfbP95Ms)}</td>
+              <td>{row.smallSample ? <span className="badge off" title={`Kurang dari ${minSample} request: belum bisa diandalkan`}>sampel kecil</span> : 'cukup'}</td>
+            </tr>
+          ))
+        ) : (
+          <tr>
+            <td colSpan={9}>Tidak ada data pada jendela ini.</td>
+          </tr>
+        )}
+      </DataTable>
     </>
   )
 }

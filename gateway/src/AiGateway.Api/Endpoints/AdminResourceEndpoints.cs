@@ -88,6 +88,7 @@ public static class AdminResourceEndpoints
         g.MapGet("usage/summary", UsageSummaryAsync).RequireAuthorization(Policies.TenantViewer);
         g.MapGet("usage/logs", UsageLogsAsync).RequireAuthorization(Policies.TenantViewer);
         g.MapGet("usage/sessions", UsageSessionsAsync).RequireAuthorization(Policies.TenantViewer);
+        g.MapGet("usage/health", UsageHealthAsync).RequireAuthorization(Policies.TenantViewer);
         g.MapGet("usage/export", UsageExportAsync).RequireAuthorization(Policies.TenantViewer);
 
         g.MapGet("users", ListUsersAsync).RequireAuthorization(Policies.TenantOwner);
@@ -364,6 +365,13 @@ public static class AdminResourceEndpoints
         var result = await reports.LogsAsync(filter, page ?? 1, pageSize ?? 50, ct);
         return Results.Ok(await RemapLogsAsync(result, db, ct));
     }
+
+    /// <summary>
+    /// GB-03: kesehatan model dan provider yang diturunkan dari log request (bukan probe aktif). <c>window</c>: 1h, 6h, 24h (bawaan)
+    /// atau 7d. Daftar kosong = tidak ada request yang diteruskan ke provider pada jendela itu.
+    /// </summary>
+    private static async Task<IResult> UsageHealthAsync(string? window, UsageHealthReport report, CancellationToken ct) =>
+        Results.Ok(await report.RunAsync(window, ct));
 
     /// <summary>
     /// GB-02: sesi dengan biaya terbesar pada rentang/filter (hanya baris yang membawa sesi). Dihitung dari log request, jadi
