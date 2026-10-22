@@ -4,6 +4,7 @@ using AiGateway.Api.Endpoints;
 using AiGateway.Api.Http;
 using AiGateway.Core.Common;
 using AiGateway.Core.Data;
+using AiGateway.Core.Maintenance;
 using AiGateway.Core.Options;
 using AiGateway.Core.Security;
 using Microsoft.AspNetCore.DataProtection;
@@ -19,6 +20,7 @@ builder.Services.AddGatewayCore(builder.Configuration);
 builder.Services.AddGatewayAuth();
 builder.Services.AddExceptionHandler<GatewayExceptionHandler>();
 builder.Services.AddRequestProtection(builder.Configuration);
+builder.Services.AddGatewayMetrics(builder.Configuration); // GB-05: nonaktif kecuali Metrics:Enabled=true (+ token)
 // Kunci Data Protection (dipakai mengenkripsi key provider) disimpan di database, dienkripsi
 // DPAPI (Windows) atau sertifikat (Security:KeyCertificateThumbprint) sebelum disimpan.
 builder.Services.AddProtectedGatewayKeys(builder.Configuration);
@@ -54,6 +56,23 @@ if (app.Environment.IsDevelopment())
 
 app.MapGet("/healthz", async (GatewayDbContext db, CancellationToken ct) =>
     await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ok" }) : Results.StatusCode(503));
+
+// GB-05: liveness (proses hidup, tanpa dependensi) dan readiness (database, migration, worker maintenance). Tanpa auth,
+// tanpa detail galat; kegagalan provider upstream sengaja bukan bagian readiness.
+app.MapGet("/healthz/live", (HttpContext http) =>
+{
+    http.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(new { status = "live" });
+});
+app.MapGet("/healthz/ready", async (HttpContext http, ReadinessService readiness, CancellationToken ct) =>
+{
+    http.Response.Headers.CacheControl = "no-store";
+    var report = await readiness.CheckAsync(ct);
+    return report.Ready
+        ? Results.Ok(new { status = "ready", checks = report.Checks })
+        : Results.Json(new { status = "not_ready", checks = report.Checks }, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+app.MapGatewayMetrics();
 
 app.MapDataPlane();
 app.MapAdminAuth();

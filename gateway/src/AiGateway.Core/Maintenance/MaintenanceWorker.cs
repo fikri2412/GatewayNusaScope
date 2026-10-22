@@ -11,7 +11,8 @@ namespace AiGateway.Core.Maintenance;
 /// evaluasi alert menyetel tenant per iterasi.
 /// </summary>
 public sealed class MaintenanceWorker(
-    MaintenanceScopeFactory scopes, IOptions<MaintenanceOptions> options, TimeProvider clock, ILogger<MaintenanceWorker> log)
+    MaintenanceScopeFactory scopes, IOptions<MaintenanceOptions> options, TimeProvider clock, ILogger<MaintenanceWorker> log,
+    MaintenanceHeartbeat? heartbeat = null)
     : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -86,10 +87,12 @@ public sealed class MaintenanceWorker(
     {
         await using var recorderScope = scopes.CreateAsyncScope();
         var recorder = recorderScope.ServiceProvider.GetRequiredService<JobRunRecorder>();
-        await recorder.RunAsync(name, async () =>
+        var succeeded = await recorder.RunAsync(name, async () =>
         {
             await using var jobScope = scopes.CreateAsyncScope();
             return await job(jobScope.ServiceProvider);
         }, ct);
+        if (succeeded) heartbeat?.RecordSuccess(name); // GB-05: dasar readiness "maintenance terakhir sukses"
+        else log.LogWarning("Job {JobName} tidak selesai sukses; readiness akan menandai worker basi bila ini berlanjut.", name);
     }
 }

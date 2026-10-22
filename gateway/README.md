@@ -136,7 +136,19 @@ ALTER ROLE gateway_platform ADD MEMBER gateway_platform_user;
 - **Alert**: rule per tenant/project/key (`daily_tokens`, `monthly_tokens`, `monthly_budget`) dengan ambang persen; event dedup per periode+ambang.
 - **Log**: 4xx yang memang diharapkan (login gagal, penolakan kebijakan) tercatat di `audit_logs`/`usage_logs`;
   pertimbangkan menurunkan level kategori `Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware` ke `Warning` bila log terlalu ramai.
-- **Health**: `GET /healthz` (200 bila database bisa dihubungi).
+- **Health**: `GET /healthz` (200 bila database bisa dihubungi; tidak berubah). GB-05 menambah `GET /healthz/live` (liveness: proses hidup, tanpa dependensi, selalu 200) dan
+  `GET /healthz/ready` (readiness: **database** terjangkau, **migration** tidak ada yang tertunda, dan job maintenance `maintenance.webhook_delivery` terakhir **sukses** dalam
+  `max(120 dtk, 3 × Maintenance:CycleSeconds)` sejak sukses terakhir atau sejak proses start). 200 `{"status":"ready","checks":{"database":"ok","migrations":"ok","maintenance":"ok"}}`
+  atau 503 `{"status":"not_ready",...}` dengan nilai `fail`/`skipped`/`pending:N`/`stale` per pemeriksaan, tanpa pesan galat, nama database, atau detail lain. Readiness **tidak** memanggil
+  provider upstream: provider yang mati bukan alasan gateway keluar dari load balancer (itu tugas fallback/cooldown). Arahkan load balancer/monitor ke `/healthz/ready` dan
+  restart-on-failure ke `/healthz/live`. Hasil "tidak ada migration tertunda" di-cache 60 detik; status worker bersifat per proses (di memori).
+- **Metrik Prometheus (GB-05, opsional, nonaktif)**: set `Metrics:Enabled=true` **dan** `Metrics:BearerToken` (≥ 24 karakter; secret: `dotnet user-secrets`/variabel lingkungan, bukan file yang
+  di-commit); tanpa token host menolak start. Endpoint `Metrics:Path` (bawaan `/metrics`; tidak boleh di bawah `/v1`, `/admin`, `/client`, `/platform`, `/healthz`) hanya menjawab permintaan
+  `Authorization: Bearer <token>` yang cocok (selain itu 401). Format teks Prometheus 0.0.4 dari meter `AiGateway.Http` dan `AiGateway.WebSearch`
+  (`gateway_http_requests_total{area,status}`, histogram `gateway_http_duration_milliseconds`, `gateway_websearch_*`) ditambah `gateway_uptime_seconds`,
+  `gateway_maintenance_last_success_timestamp_seconds{job}`, dan `gateway_metrics_dropped_total`. **Label dibatasi oleh kode**: hanya `area`, `status`, `operation`, `provider`
+  (+ `le`, `job`); tenant, key, model, path, dan email tidak pernah menjadi label, nilai label dipangkas 40 karakter, dan satu metrik maksimal 200 seri. Exporter OTLP tidak dibangun
+  (tanpa dependency baru); tanpa konfigurasi tidak ada listener dan perilaku tidak berubah.
 - **Kesehatan model dan provider (GB-03)**: `GET /admin/api/usage/health?window=1h|6h|24h|7d` (bawaan 24h, maksimum 7 hari; peran viewer ke atas) dan panel
   "Kesehatan model dan provider" di halaman Usage menampilkan jumlah request, error rate, fallback rate, latensi p50/p95, dan TTFB p50/p95 per model dan
   per provider. **Diturunkan dari `usage_logs`, bukan probe aktif**: provider yang tidak dipakai tidak muncul dan angka hanya berubah saat ada request.
