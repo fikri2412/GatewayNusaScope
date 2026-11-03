@@ -10,12 +10,21 @@ public sealed record UsageRow(
     long IncompleteUsageRequests);
 
 public sealed record UsageFilter(
-    DateTime From, DateTime To, long? ProjectId = null, long? ApiKeyId = null, long? ModelId = null, string? Status = null);
+    DateTime From, DateTime To, long? ProjectId = null, long? ApiKeyId = null, long? ModelId = null, string? Status = null,
+    string? SessionId = null);
 
 public sealed record UsageLogRow(
     long Id, DateTime CreatedAt, Guid RequestId, long ProjectId, long ApiKeyId, long? ModelId, string Status, int HttpStatus,
     string? DeniedReason, int InputTokens, int OutputTokens, int CachedTokens, int ReasoningTokens, decimal Cost, int LatencyMs,
-    int Attempts, bool FallbackUsed, string? EndUser, string? Tags, bool UsageIncomplete);
+    int Attempts, bool FallbackUsed, string? EndUser, string? Tags, bool UsageIncomplete, string? SessionId = null);
+
+/// <summary>
+/// Pemakaian satu sesi klien (GB-02), dihitung dari <c>usage_logs</c> (bukan <c>usage_daily</c>), jadi mengikuti masa simpan log.
+/// <see cref="IncompleteUsageRequests"/> &gt; 0 berarti token/biaya adalah batas bawah.
+/// </summary>
+public sealed record SessionUsageRow(
+    string SessionId, long Requests, long Denied, long Errors, long InputTokens, long OutputTokens, decimal Cost,
+    long IncompleteUsageRequests, DateTime FirstAt, DateTime LastAt);
 
 public sealed record Page<T>(IReadOnlyList<T> Items, int Total, int PageNumber, int PageSize);
 
@@ -25,6 +34,8 @@ public sealed class UsageReports(GatewayDbContext db)
     public const int MaxPageSize = 200;
     public const int MaxExportRows = 100_000;
     public const int MaxRangeDays = 366;
+    /// <summary>Batas baris laporan sesi teratas.</summary>
+    public const int MaxSessionRows = 100;
     /// <summary>Batas nomor halaman; nomor yang lebih besar diklem supaya offset tidak overflow.</summary>
     public const int MaxPageNumber = 100_000;
 
@@ -91,6 +102,35 @@ public sealed class UsageReports(GatewayDbContext db)
         return new Page<UsageLogRow>(items, total, page, pageSize);
     }
 
+    /// <summary>
+    /// GB-02: sesi dengan biaya terbesar pada rentang/filter ini (hanya baris yang membawa sesi), diurut biaya lalu jumlah request.
+    /// <paramref name="limit"/> dibatasi 1..<see cref="MaxSessionRows"/>.
+    /// </summary>
+    public async Task<List<SessionUsageRow>> TopSessionsAsync(UsageFilter filter, int limit, CancellationToken ct)
+    {
+        ValidateRange(filter.From, filter.To);
+        limit = Math.Clamp(limit, 1, MaxSessionRows);
+        var rows = await Filtered(filter).Where(l => l.SessionId != null)
+            .GroupBy(l => l.SessionId!)
+            .Select(g => new
+            {
+                SessionId = g.Key,
+                Requests = g.Count(),
+                Denied = g.Count(l => l.Status == Domain.UsageStatuses.Denied),
+                Errors = g.Count(l => l.Status == Domain.UsageStatuses.Error),
+                In = g.Sum(l => (long)l.InputTokens),
+                Out = g.Sum(l => (long)l.OutputTokens),
+                Cost = g.Sum(l => l.Cost),
+                Incomplete = g.Count(l => l.UsageIncomplete),
+                First = g.Min(l => l.CreatedAt),
+                Last = g.Max(l => l.CreatedAt),
+            })
+            .OrderByDescending(r => r.Cost).ThenByDescending(r => r.Requests).ThenBy(r => r.SessionId)
+            .Take(limit).ToListAsync(ct);
+        return rows.Select(r => new SessionUsageRow(
+            r.SessionId, r.Requests, r.Denied, r.Errors, r.In, r.Out, r.Cost, r.Incomplete, r.First, r.Last)).ToList();
+    }
+
     /// <summary>Jumlah baris log yang cocok dengan filter, dipakai ekspor untuk memeriksa ukuran sebelum menulis.</summary>
     public Task<int> CountAsync(UsageFilter filter, CancellationToken ct)
     {
@@ -113,13 +153,14 @@ public sealed class UsageReports(GatewayDbContext db)
         if (f.ApiKeyId is { } k) q = q.Where(l => l.ApiKeyId == k);
         if (f.ModelId is { } m) q = q.Where(l => l.ModelId == m);
         if (f.Status is { } s) q = q.Where(l => l.Status == s);
+        if (f.SessionId is { } session) q = q.Where(l => l.SessionId == session);
         return q;
     }
 
     private static readonly System.Linq.Expressions.Expression<Func<Domain.UsageLog, UsageLogRow>> Row = l => new UsageLogRow(
         l.Id, l.CreatedAt, l.RequestId, l.ProjectId, l.ApiKeyId, l.ModelId, l.Status, l.HttpStatus, l.DeniedReason,
         l.InputTokens, l.OutputTokens, l.CachedTokens, l.ReasoningTokens, l.Cost, l.LatencyMs, l.Attempts, l.FallbackUsed, l.EndUser, l.Tags,
-        l.UsageIncomplete);
+        l.UsageIncomplete, l.SessionId);
 
     public static string Csv(string? value)
     {

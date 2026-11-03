@@ -73,6 +73,8 @@ dotnet user-secrets set "Seed:AdminPassword" "<minimal 12 karakter>" --project s
 | `Proxy:UpstreamTimeoutSeconds` | deadline satu route sampai headers + body REST selesai (juga body error / event SSE pertama sebelum commit); setelah commit SSE menjadi batas diam antar baris | 120 s |
 | `Proxy:MaxStreamSeconds` | durasi maksimum pompa SSE, termasuk read, write, flush dan pengiriman error terminal | 900 |
 | `Proxy:MaxConcurrentPerTenant` | permintaan chat bersamaan per tenant; kelebihan ditolak 429 `concurrency_limit_exceeded` | 64 |
+| `Proxy:RequestDeadlineSeconds` | batas waktu seluruh rantai route (semua percobaan + fallback) sampai respons REST utuh atau event SSE pertama; lewat batas → 504 `upstream_timeout` (usage: `request_deadline_exceeded`). Tidak memotong stream yang sudah commit. Naikkan bila `Proxy:UpstreamTimeoutSeconds` sengaja > 180 | 180 s |
+| `Proxy:CooldownSeconds` / `Proxy:CooldownFailureThreshold` / `Proxy:CooldownWindowSeconds` / `Proxy:CooldownMaxSeconds` | cooldown route (GB-01): lama dilewati / jumlah kegagalan provider berturut-turut yang memicunya / jendela "berturut-turut" / batas atas cooldown dari `Retry-After`. `CooldownSeconds=0` mematikan fitur | 30 s / 3 / 60 s / 300 s |
 | `Auth:*` | `MaxFailedLogins`, `LockoutMinutes`, `AccessTokenMinutes`, `RefreshTokenDays`, `MinPasswordLength` | 5 / 15 / 15 / 14 / 12 |
 | `Maintenance:*` | masa simpan body/usage/job/delivery, jadwal worker, batas webhook | lihat `MaintenanceOptions` |
 | `Database:AutoMigrate` | jalankan migration saat start (dev) | `false` |
@@ -134,7 +136,28 @@ ALTER ROLE gateway_platform ADD MEMBER gateway_platform_user;
 - **Alert**: rule per tenant/project/key (`daily_tokens`, `monthly_tokens`, `monthly_budget`) dengan ambang persen; event dedup per periode+ambang.
 - **Log**: 4xx yang memang diharapkan (login gagal, penolakan kebijakan) tercatat di `audit_logs`/`usage_logs`;
   pertimbangkan menurunkan level kategori `Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware` ke `Warning` bila log terlalu ramai.
-- **Health**: `GET /healthz` (200 bila database bisa dihubungi).
+- **Health**: `GET /healthz` (200 bila database bisa dihubungi; tidak berubah). GB-05 menambah `GET /healthz/live` (liveness: proses hidup, tanpa dependensi, selalu 200) dan
+  `GET /healthz/ready` (readiness: **database** terjangkau, **migration** tidak ada yang tertunda, dan job maintenance `maintenance.webhook_delivery` terakhir **sukses** dalam
+  `max(120 dtk, 3 × Maintenance:CycleSeconds)` sejak sukses terakhir atau sejak proses start). 200 `{"status":"ready","checks":{"database":"ok","migrations":"ok","maintenance":"ok"}}`
+  atau 503 `{"status":"not_ready",...}` dengan nilai `fail`/`skipped`/`pending:N`/`stale` per pemeriksaan, tanpa pesan galat, nama database, atau detail lain. Readiness **tidak** memanggil
+  provider upstream: provider yang mati bukan alasan gateway keluar dari load balancer (itu tugas fallback/cooldown). Arahkan load balancer/monitor ke `/healthz/ready` dan
+  restart-on-failure ke `/healthz/live`. Hasil "tidak ada migration tertunda" di-cache 60 detik; status worker bersifat per proses (di memori).
+- **Metrik Prometheus (GB-05, opsional, nonaktif)**: set `Metrics:Enabled=true` **dan** `Metrics:BearerToken` (≥ 24 karakter; secret: `dotnet user-secrets`/variabel lingkungan, bukan file yang
+  di-commit); tanpa token host menolak start. Endpoint `Metrics:Path` (bawaan `/metrics`; tidak boleh di bawah `/v1`, `/admin`, `/client`, `/platform`, `/healthz`) hanya menjawab permintaan
+  `Authorization: Bearer <token>` yang cocok (selain itu 401). Format teks Prometheus 0.0.4 dari meter `AiGateway.Http` dan `AiGateway.WebSearch`
+  (`gateway_http_requests_total{area,status}`, histogram `gateway_http_duration_milliseconds`, `gateway_websearch_*`) ditambah `gateway_uptime_seconds`,
+  `gateway_maintenance_last_success_timestamp_seconds{job}`, dan `gateway_metrics_dropped_total`. **Label dibatasi oleh kode**: hanya `area`, `status`, `operation`, `provider`
+  (+ `le`, `job`); tenant, key, model, path, dan email tidak pernah menjadi label, nilai label dipangkas 40 karakter, dan satu metrik maksimal 200 seri. Exporter OTLP tidak dibangun
+  (tanpa dependency baru); tanpa konfigurasi tidak ada listener dan perilaku tidak berubah.
+- **Kesehatan model dan provider (GB-03)**: `GET /admin/api/usage/health?window=1h|6h|24h|7d` (bawaan 24h, maksimum 7 hari; peran viewer ke atas) dan panel
+  "Kesehatan model dan provider" di halaman Usage menampilkan jumlah request, error rate, fallback rate, latensi p50/p95, dan TTFB p50/p95 per model dan
+  per provider. **Diturunkan dari `usage_logs`, bukan probe aktif**: provider yang tidak dipakai tidak muncul dan angka hanya berubah saat ada request.
+  Dihitung di SQL (tanpa migration; memakai indeks `(tenant_id, created_at)` yang sudah ada). Yang dihitung hanya request yang diteruskan ke provider
+  (`attempts > 0`) dan bukan pembatalan klien (499); penolakan kebijakan/otentikasi tidak masuk. Error = status `error` dengan HTTP ≥ 500, 429, stream
+  putus/timeout, atau respons terlalu besar; 4xx dari request klien tidak dihitung. Persentil hanya dari request sukses. Provider dikaitkan ke jawaban akhir
+  (percobaan yang gagal lalu dialihkan tidak tercatat sendiri, jadi error rate provider yang sering gagal-lalu-fallback terlihat rendah; lihat catatan
+  `ponytail` di `ChatProxy`). Kurang dari 30 request ditandai "sampel kecil"; jendela tanpa request menjawab daftar kosong ("Tidak ada data"), bukan 0% atau 100%.
+- **Cooldown route (GB-01)**: route yang gagal karena provider (timeout, tidak terjangkau, 408/5xx, 429) `Proxy:CooldownFailureThreshold` kali berturut-turut dilewati selama `Proxy:CooldownSeconds` bila masih ada route lain; sesudahnya tepat satu request mencoba lagi (probe) dan hasilnya memulihkan atau memulai cooldown baru. 429 dengan `Retry-After` langsung cooldown selama nilai itu (dibatasi `CooldownMaxSeconds`). Bila **semua** route yang bisa meneruskan sedang cooldown, satu route (yang paling cepat selesai) tetap dicoba, jadi permintaan tidak pernah ditolak karena riwayat saja. 4xx karena request klien, 401/403/404 dari upstream, dan galat konfigurasi lokal tidak memicu cooldown. State berada di memori **per proses** dan per `(tenant, route)`; hilang saat restart dan tidak dibagi antar-instance. Peringatan log `Route … masuk cooldown` menandai kejadiannya; `usage_logs.attempts`/`fallback_used` hanya menghitung route yang benar-benar dicoba.
 - **Batas satu instance**: rate limit kebijakan, gerbang konkurensi per tenant (`Proxy:MaxConcurrentPerTenant`), dan klaim pengiriman
   webhook disimpan di memori proses — menjalankan lebih dari satu instance gateway melemahkan ketiganya (perlu state bersama).
 - **Webhook**: tiap pengiriman membawa `X-Gateway-Timestamp` (Unix **detik**) dan `X-Gateway-Signature: sha256=<hex>`, yaitu
@@ -149,6 +172,13 @@ ALTER ROLE gateway_platform ADD MEMBER gateway_platform_user;
   - **Kontrol runtime pasca-6C:** namespace yang sama menerima tujuh budget AI HTTP/SSE, tiga kontrol upload/lampiran dan sembilan budget dokumen/vision/watchdog. `Upload:AllowedExtensions` adalah CSV **text** (contoh `.pdf,.png`), bukan JSON array; angka bertipe **int**. Daftar key/range/ceiling di [`../IMPROVEMENTS.md` §16](../IMPROVEMENTS.md#16-kebijakan-runtime-terpusat-pasca-6c). Report allowlist diperluas, tanpa migration gateway baru. Upgrade chatbot wajib drain + migration `GatewayRuntimeLimits` + restart API/worker/web; job lama tidak diberi fallback budget terbaru.
   - **Status aplikasi:** `POST /client/api/app-status` dengan key gateway meng-upsert laporan aman; scope tenant/project/key berasal authenticator. `GET /admin/api/app-status?namespace=chatbot` untuk tenant viewer; halaman Pengaturan menampilkan configured/applied, core prompt/policy hash, sumber sinkron/rejected/ignored, counts SQL queue/job, serta kelompok kebijakan aktif. Body dibatasi 64 KiB; tidak menerima pesan, file, teks prompt, DLL, secret, atau exception mentah; endpoint tidak menambah AI usage. Tambahan prompt hanya metadata redacted. Stale mengikuti jam server: `max(60 detik, 3 × interval laporan)`. Gagal mengirim tidak menghapus laporan; belum melapor bukan nol. Satu instalasi API per key (instalasi berbeda gunakan key berbeda).
   - **Upgrade status:** migration `G6A1AppStatusReports`, lalu ulangi script RLS untuk tabel/policy baru. Status menunjukkan laporan API terakhir, bukan attestation worker atau counter penggunaan tool/history per-turn.
+- **Pemakaian dan sisa kuota untuk pemanggil API key (GB-04)**: `GET /client/api/usage[?from=YYYY-MM-DD&to=YYYY-MM-DD]` dengan `Authorization: Bearer gw_...`
+  (key yang sama dengan `/v1`). Mengembalikan `days` (setiap hari UTC pada rentang, hari tanpa pemakaian bernilai 0), `total`, dan `quota`: untuk tiap jenis batas
+  (`dailyTokens`, `monthlyTokens`, `monthlyRequests`, `monthlyBudget`) scope dengan sisa terkecil (`limit`, `used`, `remaining`, `limitedBy` = `key`/`project`/`tenant`/`plan`,
+  `resetsAt` UTC), plus `requestsPerMinute` (batas terkecil, sisa tidak dilacak) dan `maxTokensPerRequest`; bidang tanpa batas bernilai `null`.
+  Hanya data **key itu sendiri** (bukan project atau tenant), bawaan 7 hari terakhir, maksimum 31 hari. Sumbernya `usage_daily` yang sama dengan laporan admin, jadi angkanya sama.
+  Read-only, tidak ditulis ke `usage_logs`, dan penolakan sama dengan data plane (401 key hilang/salah/dicabut/kedaluwarsa, 403 IP/tenant/project). Batas bersifat soft:
+  request yang sedang berjalan bisa melewati batas sedikit, dan `remaining` tidak pernah negatif. Header `X-RateLimit-*` sengaja tidak dibangun.
 - **Rotasi key provider** (mis. OpenCode): (1) buat key baru di konsol provider. Untuk OpenCode: **Keys → service account → Add API Key**; izin **Inference only** sudah cukup untuk gateway (inferensi, provider custom, `GET /api/v2/config` untuk sinkronisasi katalog), izin **All** hanya menambah Console API (budget) yang tidak dipakai gateway. Membuat dan mencabut key di OpenCode selalu butuh orang yang login di konsol (tidak bisa lewat API, juga dengan key berizin All). (2) Di gateway, UI **Provider → Rotasi key** (atau `POST /admin/api/providers/{id}/rotate-key`) menaruh key baru sebagai `active` dan menonaktifkan yang lama tanpa downtime; key tidak pernah ditampilkan kembali. (3) Cabut key lama di konsol. `DevSeed:UpstreamApiKey` (user-secrets) hanya dibaca saat seed dev pertama, jadi mengganti nilainya tidak mengubah provider yang sudah ada. Klien (mis. chatbot) memakai key gateway `gw_...`, bukan key provider, sehingga tidak ikut berubah.
 
 ## 7. Backup dan restore
@@ -168,6 +198,27 @@ sqlcmd -S <server> -Q "RESTORE DATABASE AiGateway FROM DISK='D:\backup\AiGateway
 
 Restore ke mesin baru: pulihkan database → pasang sertifikat/kunci DPAPI yang sama → jalankan ulang `sql/tenant-security.sql`
 (kalau RLS dipakai) → start service. **Tanpa kunci yang sama, key provider tidak bisa didekripsi** dan tenant harus mengisi ulang key.
+
+**Skrip backup (GB-06)** — `scripts/backup-gateway.ps1` (PowerShell, `sqlcmd`, autentikasi Windows; tidak menerima atau menulis password/secret):
+
+```powershell
+.\scripts\backup-gateway.ps1 -Label before-upgrade -AppDir C:\AiGateway -RestoreTest
+```
+
+Membuat `BACKUP DATABASE ... COPY_ONLY, CHECKSUM` (tidak mengganggu rantai backup lain), lalu `RESTORE VERIFYONLY ... CHECKSUM`; dengan `-RestoreTest` juga
+memulihkan ke database sementara `<nama>_verify_<waktu>`, memeriksa tabel/migration, lalu menghapusnya; dengan `-AppDir` mengzip binari/wwwroot **tanpa**
+`appsettings.Production.json`, `*.pfx`, `*.pem`, `*.key`, `*.p12`; dan menulis `*.manifest.txt` (SHA-256, ukuran, pengingat pemulihan). Keluaran bawaan:
+`%LOCALAPPDATA%\NusaScope\backups`. **Yang tidak tercakup** dan harus dijaga terpisah: sertifikat/kunci DPAPI (tanpanya key provider tidak terbaca di mesin lain),
+connection string, `Jwt:SigningKey`, dan secret konfigurasi lain. Skrip belum diuji pada database nyata di agent cloud; jalankan dulu terhadap salinan.
+
+**Gate rilis (GB-06)** — `scripts/release-gate.ps1` (lokal) menjalankan: `dotnet build -warnaserror` (gateway dan chatbot), pemeriksaan berkas migration (setiap migration punya
+Designer dengan `[Migration]`/`[DbContext]` yang cocok), `dotnet ef migrations has-pending-model-changes` untuk `GatewayDbContext` dan `AppDbContext`, **seluruh** project test
+(ditemukan otomatis; jumlah test dijumlahkan dari berkas TRX lintas project, tanpa angka minimum yang ditanam; gagal bila ada test gagal/dilewati, tidak ada test yang berjalan, atau
+sebuah project tidak menghasilkan TRX), serta `npm ci` + lint + build UI gateway. Keluar dengan kode 1 bila ada langkah gagal. Prasyarat: .NET SDK 9, `dotnet-ef`
+(`dotnet tool install --global dotnet-ef --version 9.0.*`), SQL Server LocalDB, Node. Opsi: `-SkipChatbot`, `-SkipWeb`, `-SkipTests` (hasilnya bukan stempel rilis), `-AllowSkippedTests`.
+Workflow `.github/workflows/gateway-gate.yml` menjalankan gate yang sama (`-SkipChatbot`) di Windows pada pull request yang menyentuh `gateway/` dan lewat `workflow_dispatch`;
+**belum pernah dijalankan di CI**, jadi prasyarat runner (LocalDB, dotnet-ef) bisa perlu disesuaikan. Smoke rollout manual tetap: login admin → halaman terproteksi → panggilan API
+(login 200 tidak berarti dashboard bekerja), lalu `/healthz/ready`.
 
 ## 8. Upgrade
 
@@ -207,6 +258,18 @@ dotnet ef database update 20261014090000_GA03UsageCompleteness `
 ```
 
 Untuk konfigurasi LocalDB pengembangan, jalankan EF dengan `ASPNETCORE_ENVIRONMENT=Development`.
+
+**GB-02 (`session_id` di log usage).** Migration `20261022090000_GB02UsageSessionId` menambah `usage_logs.session_id`
+(`nvarchar(200)`, nullable) dan indeks berfilter `IX_usage_logs_tenant_id_session_id_created_at`
+`(tenant_id, session_id, created_at) WHERE session_id IS NOT NULL`. Murni additif: baris lama tetap `NULL` (sesi tidak
+diketahui), tanpa backfill dan tanpa perubahan RLS. Pembuatan indeks mengunci `usage_logs` selama build; jalankan di luar jam sibuk
+bila tabel besar. SQL siap pakai: [`sql/gb02-usage-session-id.sql`](sql/gb02-usage-session-id.sql) (idempotent; `sqlcmd ... -b -i
+sql/gb02-usage-session-id.sql`), atau `dotnet ef database update 20261022090000_GB02UsageSessionId` seperti GA-03. Klien menandai sesi dengan
+header `x-opencode-session` (aturan sama dengan §11: satu nilai, 1–200 huruf/angka/`._-`; tanpa header → `NULL`, header tidak valid tetap 400).
+Admin: filter `sessionId` di `GET /admin/api/usage/logs` dan `/usage/export` (kolom CSV `session_id` ditambahkan di akhir),
+`GET /admin/api/usage/sessions?from&to[&projectId&modelId&keyId&status&limit]` untuk sesi teratas menurut biaya (maks 100), dan panel
+"Sesi teratas" di halaman Usage. Laporan sesi dihitung dari `usage_logs`, jadi hanya mencakup log yang belum dihapus retensi dan
+`incompleteUsageRequests` > 0 berarti token/biaya sesi itu batas bawah. Aplikasi klien dengan API key belum bisa membaca laporan ini (itu GB-04).
 Instalasi produksi harus menggunakan koneksi/secret deployment-nya sendiri, bukan LocalDB contoh.
 
 ## 9. Troubleshooting

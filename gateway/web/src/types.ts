@@ -103,6 +103,51 @@ export interface UsageLogItem {
   endUser: string | null
   /** True bila usage belum lengkap: token batas bawah, biaya tercatat bukan tagihan final. */
   usageIncomplete: boolean
+  /** Id sesi klien (header x-opencode-session); null bila klien tidak mengirimnya. */
+  sessionId: string | null
+}
+
+/** Kesehatan satu model atau provider yang diturunkan dari log request (bukan probe aktif). */
+export interface HealthRow {
+  id: string | null
+  label: string
+  requests: number
+  succeeded: number
+  failures: number
+  /** failures / requests; kegagalan provider saja (5xx, 429, stream putus), bukan 4xx dari request klien. */
+  errorRate: number
+  /** Porsi request sukses yang dilayani lewat fallback; null bila tidak ada yang sukses. */
+  fallbackRate: number | null
+  latencyP50Ms: number | null
+  latencyP95Ms: number | null
+  ttfbP50Ms: number | null
+  ttfbP95Ms: number | null
+  /** Di bawah ambang sampel: angka belum bisa diandalkan. */
+  smallSample: boolean
+}
+
+export interface UsageHealth {
+  window: string
+  from: string
+  to: string
+  minSample: number
+  models: HealthRow[]
+  providers: HealthRow[]
+}
+
+/** Pemakaian satu sesi klien dari log request (mengikuti masa simpan log). */
+export interface SessionUsageRow {
+  sessionId: string
+  requests: number
+  denied: number
+  errors: number
+  inputTokens: number
+  outputTokens: number
+  cost: number
+  /** > 0: token/biaya sesi ini batas bawah. */
+  incompleteUsageRequests: number
+  firstAt: string
+  lastAt: string
 }
 
 export interface Page<T> {

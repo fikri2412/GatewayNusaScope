@@ -331,6 +331,11 @@ public class UsageLog : ITenantOwned
     public bool UsageIncomplete { get; set; } = true;
     public string? EndUser { get; set; }
     public string? Tags { get; set; }
+    /// <summary>
+    /// GB-02: id sesi dari klien (header <c>x-opencode-session</c>, lihat <c>SessionIds</c>); null bila klien tidak
+    /// mengirimnya. Pengelompokan laporan, bukan identitas atau autentikasi.
+    /// </summary>
+    public string? SessionId { get; set; }
     public string? ClientIp { get; set; }
     public string? UserAgent { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

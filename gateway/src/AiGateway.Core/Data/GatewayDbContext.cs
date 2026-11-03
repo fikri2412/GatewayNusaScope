@@ -332,10 +332,13 @@ public class GatewayDbContext(DbContextOptions<GatewayDbContext> options, Tenant
             e.Property(x => x.Currency).HasMaxLength(3);
             e.Property(x => x.EndUser).HasMaxLength(200);
             e.Property(x => x.Tags).HasMaxLength(400);
+            e.Property(x => x.SessionId).HasMaxLength(200);
             e.Property(x => x.ClientIp).HasMaxLength(45);
             e.Property(x => x.UserAgent).HasMaxLength(300);
             e.HasIndex(x => new { x.TenantId, x.CreatedAt });
             e.HasIndex(x => new { x.TenantId, x.ProjectId, x.CreatedAt });
+            // GB-02: laporan/filter per sesi; baris tanpa sesi (mayoritas klien non-Go) tidak masuk indeks.
+            e.HasIndex(x => new { x.TenantId, x.SessionId, x.CreatedAt }).HasFilter("[session_id] IS NOT NULL");
         });
 
         b.Entity<UsageDaily>(e =>

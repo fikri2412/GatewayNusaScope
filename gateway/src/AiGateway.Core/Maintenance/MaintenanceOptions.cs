@@ -63,6 +63,8 @@ public static class MaintenanceServiceCollectionExtensions
         // bila ConnectionStrings:GatewayPlatform diisi; tanpa itu memakai scope aplikasi biasa.
         services.AddSingleton(sp => new MaintenanceScopeFactory(sp, config.GetConnectionString("GatewayPlatform")));
         // Worker terdaftar sebagai dirinya sendiri agar bisa dipicu manual (test/job manual) lewat RunOnceAsync.
+        services.AddSingleton<MaintenanceHeartbeat>();
+        services.AddSingleton<ReadinessService>();
         services.AddSingleton<MaintenanceWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<MaintenanceWorker>());
         return services;

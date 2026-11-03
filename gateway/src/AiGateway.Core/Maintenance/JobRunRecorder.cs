@@ -12,8 +12,10 @@ namespace AiGateway.Core.Maintenance;
 /// </summary>
 public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILogger<JobRunRecorder> log)
 {
-    public async Task RunAsync(string jobName, Func<Task<string?>> job, CancellationToken ct)
+    /// <summary>Mengembalikan true hanya bila job selesai dengan status <c>succeeded</c> (dipakai heartbeat readiness, GB-05).</summary>
+    public async Task<bool> RunAsync(string jobName, Func<Task<string?>> job, CancellationToken ct)
     {
+        var succeeded = false;
         var run = new JobRun { JobName = jobName, StartedAt = clock.GetUtcNow().UtcDateTime };
         try
         {
@@ -23,13 +25,14 @@ public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILog
         catch (Exception ex)
         {
             log.LogError(ex, "Gagal mencatat awal job {JobName}", jobName);
-            return;
+            return false;
         }
 
         try
         {
             run.Detail = Trim(await job());
             run.Status = JobRunStatuses.Succeeded;
+            succeeded = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -48,6 +51,7 @@ public sealed class JobRunRecorder(GatewayDbContext db, TimeProvider clock, ILog
         // Token sendiri: saat host berhenti, ct sudah batal dan baris akan tertinggal "running" tanpa penutup.
         try { await db.SaveChangesAsync(CancellationToken.None); }
         catch (Exception ex) { log.LogError(ex, "Gagal menutup catatan job {JobName}", jobName); }
+        return succeeded;
     }
 
     private static string? Trim(string? detail) =>

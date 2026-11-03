@@ -1801,3 +1801,14 @@ button.command-result[data-active="true"] {
     scroll-behavior: auto !important;
   }
 }
+
+/* Tombol bergaya tautan (mis. id sesi di tabel Usage yang memfilter log). */
+button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

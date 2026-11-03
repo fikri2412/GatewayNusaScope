@@ -38,6 +38,7 @@ public sealed class UsageRecorder(GatewayDbContext db, ILogger<UsageRecorder> lo
             ClientIp = caller.ClientIp,
             UserAgent = caller.UserAgent,
             Tags = caller.Tags,
+            SessionId = caller.SessionId,
         });
 
     /// <summary>
